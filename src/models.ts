@@ -6,6 +6,7 @@
 
 /** Canonical Kiro API IDs (dot form) accepted by the server. */
 export const KIRO_MODEL_IDS = new Set<string>([
+  "claude-opus-4.8",
   "claude-opus-4.7",
   "claude-opus-4.6",
   "claude-opus-4.6-1m",
@@ -27,6 +28,16 @@ export const KIRO_MODEL_IDS = new Set<string>([
   "qwen3-coder-480b",
   "auto",
 ]);
+
+/** Convert pi's dash form to the Kiro API's dot form (e.g. 4-6 → 4.6). */
+export function dashToDot(modelId: string): string {
+  return modelId.replace(/(\d)-(\d)/g, "$1.$2");
+}
+
+/** Convert Kiro API's dot form to pi's dash form (e.g. 4.6 → 4-6). */
+export function dotToDash(modelId: string): string {
+  return modelId.replace(/(\d)\.(\d)/g, "$1-$2");
+}
 
 /** Convert pi's dash form to the Kiro API's dot form (e.g. 4-6 → 4.6). */
 export function resolveKiroModel(modelId: string): string {
@@ -77,6 +88,7 @@ export function resolveApiRegion(ssoRegion: string | undefined): string {
  */
 const MODELS_BY_REGION: Record<string, Set<string>> = {
   "us-east-1": new Set([
+    "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-opus-4-6-1m",
@@ -99,6 +111,7 @@ const MODELS_BY_REGION: Record<string, Set<string>> = {
     "auto",
   ]),
   "eu-central-1": new Set([
+    "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
@@ -133,7 +146,7 @@ const RUNTIME_ENDPOINTS: Record<string, string> = {
   "eu-central-1": "https://runtime.eu-central-1.kiro.dev",
 };
 
-function resolveRuntimeUrl(apiRegion: string): string {
+export function resolveRuntimeUrl(apiRegion: string): string {
   return RUNTIME_ENDPOINTS[apiRegion] ?? `https://runtime.${apiRegion}.kiro.dev`;
 }
 
@@ -192,6 +205,17 @@ export interface KiroModel {
 }
 
 export const kiroModels: KiroModel[] = [
+  {
+    ...KIRO_DEFAULTS,
+    id: "claude-opus-4-8",
+    name: "Claude Opus 4.8",
+    reasoning: true,
+    reasoningHidden: true,
+    input: MULTIMODAL,
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+    firstTokenTimeout: 180_000,
+  },
   {
     ...KIRO_DEFAULTS,
     id: "claude-opus-4-7",
@@ -375,3 +399,107 @@ export const kiroModels: KiroModel[] = [
     maxTokens: 65_536,
   },
 ];
+
+// ---- Dynamic model resolution -----------------------------------------
+
+export interface KiroApiModel {
+  modelId: string;
+  modelName: string;
+  tokenLimits?: { maxInputTokens?: number; maxOutputTokens?: number };
+  supportedInputTypes?: string[];
+}
+
+/**
+ * Fetch the list of models actually available for this account from Kiro.
+ * Filters out "auto" — it appears in ListAvailableModels but is rejected
+ * by GenerateAssistantResponse with INVALID_MODEL_ID.
+ */
+export async function fetchAvailableModels(
+  accessToken: string,
+  apiRegion: string,
+): Promise<KiroApiModel[]> {
+  const url = `https://management.${apiRegion}.kiro.dev/ListAvailableModels?origin=AI_EDITOR`;
+  const resp = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      "User-Agent": "pi-kiro",
+    },
+  });
+  if (!resp.ok) {
+    throw new Error(`ListAvailableModels failed: HTTP ${resp.status}`);
+  }
+  const data = (await resp.json()) as { models?: KiroApiModel[] };
+  return (data.models ?? []).filter((m) => m.modelId !== "auto");
+}
+
+/** Model families known to support reasoning/thinking. */
+const REASONING_FAMILIES = new Set([
+  "claude-sonnet", "claude-opus",
+  "deepseek", "kimi", "glm", "qwen3-coder", "agi-nova",
+]);
+
+function isReasoningModel(dotId: string): boolean {
+  for (const family of REASONING_FAMILIES) {
+    if (dotId.startsWith(family)) return true;
+  }
+  return false;
+}
+
+/** First-token timeout for slow models (Claude Opus can take 2-3 minutes). */
+function firstTokenTimeout(dotId: string): number {
+  if (dotId.startsWith("claude-opus")) return 180_000;
+  return 90_000;
+}
+
+export interface KiroModelDef {
+  id: string;
+  name: string;
+  reasoning: boolean;
+  input: ("text" | "image")[];
+  contextWindow: number;
+  maxTokens: number;
+  firstTokenTimeout?: number;
+  reasoningHidden?: boolean;
+}
+
+/**
+ * Build pi model definitions from the Kiro ListAvailableModels API response.
+ * Adds any new model IDs dynamically to KIRO_MODEL_IDS so resolveKiroModel passes.
+ */
+export function buildModelsFromApi(apiModels: KiroApiModel[]): KiroModelDef[] {
+  return apiModels.map((m) => {
+    // Register the model ID dynamically to allow resolveKiroModel to pass
+    KIRO_MODEL_IDS.add(m.modelId);
+
+    const dashId = dotToDash(m.modelId);
+    const supportedTypes = m.supportedInputTypes ?? ["TEXT"];
+    const input: ("text" | "image")[] = supportedTypes.includes("IMAGE")
+      ? ["text", "image"]
+      : ["text"];
+
+    return {
+      id: dashId,
+      name: m.modelName,
+      reasoning: isReasoningModel(m.modelId),
+      input,
+      contextWindow: m.tokenLimits?.maxInputTokens ?? 200_000,
+      maxTokens: m.tokenLimits?.maxOutputTokens ?? 8_192,
+      firstTokenTimeout: firstTokenTimeout(m.modelId),
+      // Per-model overrides for known special cases
+      ...(m.modelId === "claude-opus-4.7" || m.modelId === "claude-opus-4.8" ? { reasoningHidden: true } : {}),
+    };
+  });
+}
+
+// Module-level cache for dynamically loaded models
+let cachedDynamicModels: KiroModelDef[] | null = null;
+
+export function getCachedDynamicModels(): KiroModelDef[] | null {
+  return cachedDynamicModels;
+}
+
+export function setCachedDynamicModels(models: KiroModelDef[] | null): void {
+  cachedDynamicModels = models;
+}

@@ -22,8 +22,14 @@
 // extension to fix. Report upstream: add `this.contentContainer.clear()` at
 // the top of `showPrompt`, or allocate a new Input per call.
 
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@mariozechner/pi-ai";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { log } from "./debug";
+import {
+  fetchAvailableModels,
+  buildModelsFromApi,
+  resolveApiRegion,
+  setCachedDynamicModels,
+} from "./models";
 
 export const BUILDER_ID_START_URL = "https://view.awsapps.com/start";
 export const BUILDER_ID_REGION = "us-east-1";
@@ -294,6 +300,15 @@ async function runDeviceCodeFlow(
     throw new Error("Authorization completed but no tokens returned");
   }
 
+  try {
+    const apiRegion = resolveApiRegion(detectedRegion);
+    const apiModels = await fetchAvailableModels(tok.accessToken, apiRegion);
+    setCachedDynamicModels(buildModelsFromApi(apiModels));
+    log.info(`Fetched and cached ${apiModels.length} models after login`);
+  } catch (err) {
+    log.warn(`Failed to fetch models after login, falling back: ${err}`);
+  }
+
   return {
     refresh: `${tok.refreshToken}|${result.clientId}|${result.clientSecret}|${authMethod}`,
     access: tok.accessToken,
@@ -345,6 +360,15 @@ export async function refreshKiroToken(
     refreshToken: string;
     expiresIn?: number;
   };
+
+  try {
+    const apiRegion = resolveApiRegion(region);
+    const apiModels = await fetchAvailableModels(data.accessToken, apiRegion);
+    setCachedDynamicModels(buildModelsFromApi(apiModels));
+    log.info(`Fetched and cached ${apiModels.length} models after token refresh`);
+  } catch (err) {
+    log.warn(`Failed to fetch models after token refresh, falling back: ${err}`);
+  }
 
   return {
     refresh: `${data.refreshToken}|${clientId}|${clientSecret}|${authMethod}`,

@@ -4,8 +4,8 @@ import type {
   Tool,
   ToolResultMessage,
   UserMessage,
-} from "@mariozechner/pi-ai";
-import { Type } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
   buildHistory,

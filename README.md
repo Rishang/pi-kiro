@@ -1,6 +1,6 @@
 # pi-kiro
 
-[Kiro](https://kiro.dev) provider for [pi](https://github.com/badlogic/pi-mono).
+[Kiro](https://kiro.dev) provider for [pi](https://github.com/earendil-works/pi).
 
 Adds the Kiro model family (AWS Builder ID login, CodeWhisperer streaming API)
 to pi's coding agent.
@@ -103,7 +103,7 @@ for await (const event of stream) {
 const finalMessage = await stream.result();
 ```
 
-Only `@mariozechner/pi-ai` is required at runtime for this path.
+Only `@earendil-works/pi-ai` is required at runtime for this path.
 
 ### Requirements
 

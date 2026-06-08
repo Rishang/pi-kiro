@@ -15,8 +15,8 @@ import type {
   ThinkingContent,
   ToolCall,
   ToolResultMessage,
-} from "@mariozechner/pi-ai";
-import { calculateCost, createAssistantMessageEventStream } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
+import { calculateCost, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { log, previewChunk } from "./debug";
 import { parseKiroEvents } from "./event-parser";
 import type { KiroModel } from "./models";
@@ -51,6 +51,13 @@ const CAPACITY_MAX_RETRIES = 3;
 const CAPACITY_BASE_DELAY_MS = 5_000;
 const CAPACITY_MAX_DELAY_MS = 30_000;
 
+const TRANSIENT_MAX_RETRIES = 3;
+const TRANSIENT_BASE_DELAY_MS = 2_000;
+const TRANSIENT_MAX_DELAY_MS = 15_000;
+
+const CONTEXT_TRUNCATION_MAX_RETRIES = 3;
+const CONTEXT_TRUNCATION_DROP_RATIO = 0.3;
+
 const TOO_BIG_PATTERNS = ["CONTENT_LENGTH_EXCEEDS_THRESHOLD", "Input is too long", "Improperly formed"];
 const NON_RETRYABLE_BODY_PATTERNS = ["MONTHLY_REQUEST_COUNT"];
 const CAPACITY_PATTERN = "INSUFFICIENT_MODEL_CAPACITY";
@@ -69,6 +76,10 @@ function isNonRetryableBodyError(body: string): boolean {
 
 function isCapacityError(body: string): boolean {
   return body.includes(CAPACITY_PATTERN);
+}
+
+function isTransientError(status: number): boolean {
+  return status === 429 || status >= 500;
 }
 
 function firstTokenTimeoutForModel(modelId: string): number {
@@ -503,6 +514,8 @@ export function streamKiro(
 
         let response!: Response;
         let capacityRetryCount = 0;
+        let transientRetryCount = 0;
+        let contextTruncationAttempt = 0;
         while (true) {
           const mid = crypto.randomUUID().replace(/-/g, "");
           const ua = `aws-sdk-rust/1.0.0 ua/2.1 os/other lang/rust api/codewhispererstreaming#1.28.3 m/E app/AmazonQ-For-CLI md/appVersion-1.28.3-${mid}`;
@@ -562,7 +575,35 @@ export function streamKiro(
             throw new Error(`Kiro API error: ${errText || response.statusText}`);
           }
           if (isTooBigError(response.status, errText)) {
+            if (contextTruncationAttempt < CONTEXT_TRUNCATION_MAX_RETRIES && history.length > 0) {
+              contextTruncationAttempt++;
+              const dropCount = Math.max(1, Math.floor(history.length * CONTEXT_TRUNCATION_DROP_RATIO));
+              const before = history.length;
+              history.splice(0, dropCount);
+              log.warn(
+                `context too large — truncated history from ${before} to ${history.length} entries ` +
+                `(attempt ${contextTruncationAttempt}/${CONTEXT_TRUNCATION_MAX_RETRIES})`,
+              );
+              // Rebuild request with truncated history and retry
+              request.conversationState.history = history.length > 0 ? history : undefined;
+              continue;
+            }
             throw new Error(`Kiro API error: context_length_exceeded (${response.status} ${errText})`);
+          }
+          if (isTransientError(response.status) && transientRetryCount < TRANSIENT_MAX_RETRIES) {
+            transientRetryCount++;
+            const jitter = Math.floor(Math.random() * 1000);
+            const delayMs = exponentialBackoff(
+              transientRetryCount - 1,
+              TRANSIENT_BASE_DELAY_MS,
+              TRANSIENT_MAX_DELAY_MS,
+            ) + jitter;
+            log.warn(
+              `transient error ${response.status} — retrying in ${delayMs}ms ` +
+              `(${transientRetryCount}/${TRANSIENT_MAX_RETRIES})`,
+            );
+            await abortableDelay(delayMs, options?.signal);
+            continue;
           }
           if (response.status === 403) {
             // Access token was accepted earlier (profileArn resolved) but is
@@ -579,6 +620,12 @@ export function streamKiro(
 
         if (capacityRetryCount > 0) {
           log.info(`recovered from capacity pressure after ${capacityRetryCount} retries`);
+        }
+        if (transientRetryCount > 0) {
+          log.info(`recovered from transient error after ${transientRetryCount} retries`);
+        }
+        if (contextTruncationAttempt > 0) {
+          log.info(`recovered after ${contextTruncationAttempt} context truncation(s)`);
         }
 
         // -- Consume response stream -------------------------------------

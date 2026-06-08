@@ -4,7 +4,7 @@ import type {
   AssistantMessageEvent,
   Context,
   Model,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HIDDEN_REASONING_COUNTDOWN_MS, resetProfileArnCache, streamKiro } from "../src/stream";
 
@@ -558,4 +558,196 @@ describe("streamKiro", () => {
       expect(err.error.errorMessage).toMatch(/ThrottlingException/);
     }
   }, 30000);
+
+  describe("context truncation on too-big errors", () => {
+    function makeContextWithHistory(turns: number): Context {
+      const messages: Context["messages"] = [];
+      for (let i = 0; i < turns; i++) {
+        messages.push({ role: "user", content: `msg ${i}`, timestamp: Date.now() });
+        messages.push({
+          role: "assistant",
+          content: [{ type: "text", text: `reply ${i}` }],
+          api: "kiro-api",
+          provider: "kiro",
+          model: "claude-sonnet-4-5",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          stopReason: "stop",
+          timestamp: Date.now(),
+        });
+      }
+      // Final user message (current turn)
+      messages.push({ role: "user", content: "current question", timestamp: Date.now() });
+      return { systemPrompt: "You are helpful", messages, tools: [] };
+    }
+
+    it("retries with truncated history on 413", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const fetchMock = vi.fn()
+        // First call: 413
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 413,
+          statusText: "Too Large",
+          text: () => Promise.resolve("too big"),
+        })
+        // Second call: success
+        .mockResolvedValueOnce({
+          ok: true,
+          body: {
+            getReader: () => ({
+              read: vi.fn()
+                .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode('{"content":"Hi"}{"contextUsagePercentage":5}') })
+                .mockResolvedValueOnce({ done: true, value: undefined }),
+              cancel: vi.fn().mockResolvedValue(undefined),
+            }),
+          },
+        });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const ctx = makeContextWithHistory(5);
+      const events = await collect(streamKiro(makeModel(), ctx, { apiKey: "tok" }));
+      vi.useRealTimers();
+
+      // Should have made 2 calls — first 413, then success
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // Second request should have fewer history entries
+      const firstBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+      const secondBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
+      const firstHistoryLen = firstBody.conversationState.history?.length ?? 0;
+      const secondHistoryLen = secondBody.conversationState.history?.length ?? 0;
+      expect(secondHistoryLen).toBeLessThan(firstHistoryLen);
+
+      const done = events.find((e) => e.type === "done");
+      expect(done?.type).toBe("done");
+    }, 30000);
+
+    it("gives up after max truncation retries", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 413,
+        statusText: "Too Large",
+        text: () => Promise.resolve("too big"),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const ctx = makeContextWithHistory(20);
+      const events = await collect(streamKiro(makeModel(), ctx, { apiKey: "tok" }));
+      vi.useRealTimers();
+
+      const err = events.find((e) => e.type === "error");
+      expect(err?.type).toBe("error");
+      if (err?.type === "error") {
+        expect(err.error.errorMessage).toMatch(/context_length_exceeded/);
+      }
+    }, 30000);
+
+    it("throws immediately when history is empty and too-big error occurs", async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: "Bad Request",
+        text: () => Promise.resolve("CONTENT_LENGTH_EXCEEDS_THRESHOLD"),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      // Single message → empty history
+      const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+
+      const err = events.find((e) => e.type === "error");
+      expect(err?.type).toBe("error");
+      if (err?.type === "error") {
+        expect(err.error.errorMessage).toMatch(/context_length_exceeded/);
+      }
+      // Only 1 call — no truncation retry possible with empty history
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("transient error retry (429/5xx)", () => {
+    it("retries on 429 with backoff and succeeds", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const fetchMock = vi.fn()
+        // First: 429
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          statusText: "Too Many Requests",
+          text: () => Promise.resolve("rate limit"),
+        })
+        // Second: success
+        .mockResolvedValueOnce({
+          ok: true,
+          body: {
+            getReader: () => ({
+              read: vi.fn()
+                .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode('{"content":"Hi"}{"contextUsagePercentage":5}') })
+                .mockResolvedValueOnce({ done: true, value: undefined }),
+              cancel: vi.fn().mockResolvedValue(undefined),
+            }),
+          },
+        });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+      vi.useRealTimers();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const done = events.find((e) => e.type === "done");
+      expect(done?.type).toBe("done");
+    }, 30000);
+
+    it("retries on 500 with backoff and succeeds", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          statusText: "Internal Server Error",
+          text: () => Promise.resolve("internal error"),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: {
+            getReader: () => ({
+              read: vi.fn()
+                .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode('{"content":"Ok"}{"contextUsagePercentage":5}') })
+                .mockResolvedValueOnce({ done: true, value: undefined }),
+              cancel: vi.fn().mockResolvedValue(undefined),
+            }),
+          },
+        });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+      vi.useRealTimers();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const done = events.find((e) => e.type === "done");
+      expect(done?.type).toBe("done");
+    }, 30000);
+
+    it("gives up after max transient retries on 429", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        text: () => Promise.resolve("rate limit"),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+      vi.useRealTimers();
+
+      // 1 initial + 3 retries = 4 total
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      const err = events.find((e) => e.type === "error");
+      expect(err?.type).toBe("error");
+      if (err?.type === "error") {
+        expect(err.error.errorMessage).toMatch(/429/);
+      }
+    }, 30000);
+  });
 });

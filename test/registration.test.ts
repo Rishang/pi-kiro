@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import registerExtension from "../src/extension";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    existsSync: (path: string) => {
+      if (typeof path === "string" && path.includes("auth.json")) {
+        return false;
+      }
+      return actual.existsSync(path);
+    },
+  };
+});
+
 describe("extension registration", () => {
   it("calls pi.registerProvider with 'kiro' and all documented fields", async () => {
     const registerProvider = vi.fn();

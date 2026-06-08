@@ -13,6 +13,10 @@
 // pi's /settings view. Until then, users check their usage at
 // https://app.kiro.dev/account/usage.
 
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type {
   Api,
   AssistantMessageEventStream,
@@ -21,15 +25,26 @@ import type {
   OAuthCredentials,
   OAuthLoginCallbacks,
   SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
-import { filterModelsByRegion, kiroModels, resolveApiRegion } from "./models";
+} from "@earendil-works/pi-ai";
+import {
+  buildModelsFromApi,
+  fetchAvailableModels,
+  filterModelsByRegion,
+  getCachedDynamicModels,
+  kiroModels,
+  resolveApiRegion,
+  resolveRuntimeUrl,
+  setCachedDynamicModels,
+  type KiroModelDef,
+} from "./models";
 import { loginKiro, refreshKiroToken, type KiroCredentials } from "./oauth";
 import { streamKiro } from "./stream";
+import { log } from "./debug";
 
 // Local structural subset of pi's ExtensionAPI / ProviderConfig. pi-kiro
 // only calls `pi.registerProvider(...)`, so we declare just that method
 // plus the config shape we actually pass. Declared locally (not imported
-// from @mariozechner/pi-coding-agent) so this package has no install-time
+// from @earendil-works/pi-coding-agent) so this package has no install-time
 // dependency on the pi host's version. Any real pi ExtensionAPI satisfies
 // this interface structurally.
 interface ProviderModelConfig {
@@ -43,6 +58,8 @@ interface ProviderModelConfig {
   maxTokens: number;
   headers?: Record<string, string>;
   compat?: Model<Api>["compat"];
+  firstTokenTimeout?: number;
+  reasoningHidden?: boolean;
 }
 
 interface ProviderConfig {
@@ -70,31 +87,88 @@ interface ExtensionAPI {
   registerProvider(name: string, config: ProviderConfig): void;
 }
 
-export default function (pi: ExtensionAPI): void {
+const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+
+function toProviderModels(defs: KiroModelDef[]): ProviderModelConfig[] {
+  return defs.map((d) => ({
+    id: d.id,
+    name: d.name,
+    reasoning: d.reasoning,
+    input: d.input,
+    cost: ZERO_COST,
+    contextWindow: d.contextWindow,
+    maxTokens: d.maxTokens,
+    firstTokenTimeout: d.firstTokenTimeout,
+    ...(d.reasoningHidden ? { reasoningHidden: d.reasoningHidden } : {}),
+  }));
+}
+
+/** Read kiro credentials from pi's auth.json if available. */
+function readKiroCredentials(): { access: string; region: string } | null {
+  try {
+    const authPath = join(homedir(), ".pi", "agent", "auth.json");
+    if (!existsSync(authPath)) return null;
+    const data = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>;
+    const kiro = data["kiro"] as Record<string, unknown> | undefined;
+    if (!kiro?.access || typeof kiro.access !== "string") return null;
+    return {
+      access: kiro.access,
+      region: (kiro.region as string) || "us-east-1",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export default async function (pi: ExtensionAPI): Promise<void> {
+  // Fetch available models from Kiro API. Fallback to hardcoded list if fetch fails or no credentials.
+  let modelDefs = kiroModels as ProviderModelConfig[];
+  const creds = readKiroCredentials();
+  if (creds) {
+    try {
+      const apiRegion = resolveApiRegion(creds.region);
+      const apiModels = await fetchAvailableModels(creds.access, apiRegion);
+      const dynamicDefs = buildModelsFromApi(apiModels);
+      setCachedDynamicModels(dynamicDefs);
+      modelDefs = toProviderModels(dynamicDefs);
+      log.info(`Loaded ${modelDefs.length} models dynamically from Kiro API`);
+    } catch (err) {
+      log.warn(`Failed to fetch models at startup, using hardcoded fallback: ${err}`);
+    }
+  }
+
   pi.registerProvider("kiro", {
     baseUrl: "https://runtime.us-east-1.kiro.dev",
     api: "kiro-api",
-    models: kiroModels,
+    authHeader: true,
+    models: modelDefs,
     oauth: {
       name: "Kiro (Builder ID / IAM Identity Center)",
       login: loginKiro,
       refreshToken: refreshKiroToken,
       getApiKey: (cred: OAuthCredentials) => cred.access as string,
-      modifyModels: (models: Model<Api>[], cred: OAuthCredentials): Model<Api>[] => {
+      modifyModels: (allModels: Model<Api>[], cred: OAuthCredentials): Model<Api>[] => {
         const apiRegion = resolveApiRegion((cred as KiroCredentials).region);
-        const kiroOnly = models.filter((m) => m.provider === "kiro");
-        const nonKiro = models.filter((m) => m.provider !== "kiro");
-        const scoped = filterModelsByRegion(kiroOnly, apiRegion).map((m) => {
-          const endpoints: Record<string, string> = {
-            "us-east-1": "https://runtime.us-east-1.kiro.dev",
-            "eu-central-1": "https://runtime.eu-central-1.kiro.dev",
-          };
-          return {
+        const nonKiro = allModels.filter((m) => m.provider !== "kiro");
+
+        let kiroModelsToRegister: Model<Api>[];
+        const dynamicDefs = getCachedDynamicModels();
+        if (dynamicDefs && dynamicDefs.length > 0) {
+          kiroModelsToRegister = toProviderModels(dynamicDefs).map((m) => ({
             ...m,
-            baseUrl: endpoints[apiRegion] ?? `https://runtime.${apiRegion}.kiro.dev`,
-          };
-        });
-        return [...nonKiro, ...scoped];
+            provider: "kiro" as const,
+            api: "kiro-api" as const,
+            baseUrl: resolveRuntimeUrl(apiRegion),
+          })) as unknown as Model<Api>[];
+        } else {
+          const kiroOnly = kiroModels.map((m) => ({
+            ...m,
+            baseUrl: resolveRuntimeUrl(apiRegion),
+          }));
+          kiroModelsToRegister = filterModelsByRegion(kiroOnly, apiRegion) as unknown as Model<Api>[];
+        }
+
+        return [...nonKiro, ...kiroModelsToRegister];
       },
     },
     streamSimple: streamKiro,

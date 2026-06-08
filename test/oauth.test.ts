@@ -1,4 +1,4 @@
-import type { OAuthAuthInfo, OAuthLoginCallbacks, OAuthPrompt } from "@mariozechner/pi-ai";
+import type { OAuthAuthInfo, OAuthLoginCallbacks, OAuthPrompt } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loginKiro, refreshKiroToken } from "../src/oauth";
 
@@ -30,7 +30,15 @@ describe("loginKiro — Builder ID", () => {
 
   beforeEach(() => {
     originalFetch = global.fetch;
-    fetchMock = vi.fn();
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("ListAvailableModels")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ models: [] }),
+        });
+      }
+      return undefined;
+    });
     global.fetch = fetchMock as unknown as typeof fetch;
   });
   afterEach(() => {
@@ -80,7 +88,15 @@ describe("loginKiro — IdC", () => {
 
   beforeEach(() => {
     originalFetch = global.fetch;
-    fetchMock = vi.fn();
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("ListAvailableModels")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ models: [] }),
+        });
+      }
+      return undefined;
+    });
     global.fetch = fetchMock as unknown as typeof fetch;
   });
   afterEach(() => {
@@ -224,7 +240,15 @@ describe("refreshKiroToken", () => {
 
   beforeEach(() => {
     originalFetch = global.fetch;
-    fetchMock = vi.fn();
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("ListAvailableModels")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ models: [] }),
+        });
+      }
+      return undefined;
+    });
     global.fetch = fetchMock as unknown as typeof fetch;
   });
   afterEach(() => {
