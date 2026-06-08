@@ -202,6 +202,13 @@ export interface KiroModel {
    * See https://docs.anthropic.com/en/docs/build-with-claude/adaptive-thinking
    */
   reasoningHidden?: boolean;
+  /**
+   * Effort levels supported by this model for adaptive thinking.
+   * Sourced from `ListAvailableModels` → `additionalModelRequestFieldsSchema`.
+   * When present, the effort is sent via `additionalModelRequestFields.output_config.effort`
+   * in the GenerateAssistantResponse request body.
+   */
+  supportedEfforts?: string[];
 }
 
 export const kiroModels: KiroModel[] = [
@@ -210,22 +217,22 @@ export const kiroModels: KiroModel[] = [
     id: "claude-opus-4-8",
     name: "Claude Opus 4.8",
     reasoning: true,
-    reasoningHidden: true,
     input: MULTIMODAL,
     contextWindow: 1_000_000,
     maxTokens: 128_000,
     firstTokenTimeout: 180_000,
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
   },
   {
     ...KIRO_DEFAULTS,
     id: "claude-opus-4-7",
     name: "Claude Opus 4.7",
     reasoning: true,
-    reasoningHidden: true,
     input: MULTIMODAL,
     contextWindow: 1_000_000,
     maxTokens: 128_000,
     firstTokenTimeout: 180_000,
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
   },
   {
     ...KIRO_DEFAULTS,
@@ -233,8 +240,9 @@ export const kiroModels: KiroModel[] = [
     name: "Claude Opus 4.6",
     reasoning: true,
     input: MULTIMODAL,
-    contextWindow: 200_000,
-    maxTokens: 32_768,
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+    supportedEfforts: ["low", "medium", "high", "max"],
   },
   {
     ...KIRO_DEFAULTS,
@@ -243,7 +251,8 @@ export const kiroModels: KiroModel[] = [
     reasoning: true,
     input: MULTIMODAL,
     contextWindow: 1_000_000,
-    maxTokens: 32_768,
+    maxTokens: 64_000,
+    supportedEfforts: ["low", "medium", "high", "max"],
   },
   {
     ...KIRO_DEFAULTS,
@@ -251,8 +260,9 @@ export const kiroModels: KiroModel[] = [
     name: "Claude Sonnet 4.6",
     reasoning: true,
     input: MULTIMODAL,
-    contextWindow: 200_000,
-    maxTokens: 65_536,
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+    supportedEfforts: ["low", "medium", "high", "max"],
   },
   {
     ...KIRO_DEFAULTS,
@@ -261,7 +271,8 @@ export const kiroModels: KiroModel[] = [
     reasoning: true,
     input: MULTIMODAL,
     contextWindow: 1_000_000,
-    maxTokens: 65_536,
+    maxTokens: 64_000,
+    supportedEfforts: ["low", "medium", "high", "max"],
   },
   {
     ...KIRO_DEFAULTS,
@@ -270,7 +281,7 @@ export const kiroModels: KiroModel[] = [
     reasoning: true,
     input: MULTIMODAL,
     contextWindow: 200_000,
-    maxTokens: 32_768,
+    maxTokens: 64_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -332,17 +343,17 @@ export const kiroModels: KiroModel[] = [
     name: "MiniMax M2.5",
     reasoning: false,
     input: TEXT_ONLY,
-    contextWindow: 200_000,
-    maxTokens: 8_192,
+    contextWindow: 196_000,
+    maxTokens: 64_000,
   },
   {
     ...KIRO_DEFAULTS,
     id: "minimax-m2-1",
     name: "MiniMax M2.1",
     reasoning: false,
-    input: TEXT_ONLY,
-    contextWindow: 200_000,
-    maxTokens: 8_192,
+    input: MULTIMODAL,
+    contextWindow: 196_000,
+    maxTokens: 64_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -367,9 +378,9 @@ export const kiroModels: KiroModel[] = [
     id: "qwen3-coder-next",
     name: "Qwen3 Coder Next",
     reasoning: true,
-    input: TEXT_ONLY,
+    input: MULTIMODAL,
     contextWindow: 256_000,
-    maxTokens: 8_192,
+    maxTokens: 64_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -407,6 +418,13 @@ export interface KiroApiModel {
   modelName: string;
   tokenLimits?: { maxInputTokens?: number; maxOutputTokens?: number };
   supportedInputTypes?: string[];
+  /** Schema for extra fields accepted by GenerateAssistantResponse. */
+  additionalModelRequestFieldsSchema?: {
+    properties?: {
+      output_config?: { properties?: { effort?: { enum?: string[] } } };
+      thinking?: { properties?: { type?: { enum?: string[] } } };
+    };
+  };
 }
 
 /**
@@ -462,6 +480,7 @@ export interface KiroModelDef {
   maxTokens: number;
   firstTokenTimeout?: number;
   reasoningHidden?: boolean;
+  supportedEfforts?: string[];
 }
 
 /**
@@ -479,6 +498,13 @@ export function buildModelsFromApi(apiModels: KiroApiModel[]): KiroModelDef[] {
       ? ["text", "image"]
       : ["text"];
 
+    // Extract supported effort levels from the model schema
+    const effortEnum = m.additionalModelRequestFieldsSchema
+      ?.properties?.output_config?.properties?.effort?.enum;
+    const supportedEfforts = Array.isArray(effortEnum) && effortEnum.length > 0
+      ? effortEnum
+      : undefined;
+
     return {
       id: dashId,
       name: m.modelName,
@@ -489,6 +515,7 @@ export function buildModelsFromApi(apiModels: KiroApiModel[]): KiroModelDef[] {
       firstTokenTimeout: firstTokenTimeout(m.modelId),
       // Per-model overrides for known special cases
       ...(m.modelId === "claude-opus-4.7" || m.modelId === "claude-opus-4.8" ? { reasoningHidden: true } : {}),
+      ...(supportedEfforts ? { supportedEfforts } : {}),
     };
   });
 }

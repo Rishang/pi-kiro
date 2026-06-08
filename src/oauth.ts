@@ -218,28 +218,51 @@ async function pollForToken(
 }
 
 /**
- * Interactive login. Asks the user to pick Builder ID or IdC, then the IdC
- * region, then runs the device-code flow.
+ * Interactive login. Asks the user to pick Builder ID, IdC, or Desktop,
+ * then runs the appropriate flow.
  *
  * Uses `callbacks.onPrompt`, which is the path pi's login-dialog is wired
  * to. Escape/ctrl+c rejects the promise with "Login cancelled", propagating
  * out of this function automatically.
  */
 export async function loginKiro(callbacks: OAuthLoginCallbacks): Promise<KiroCredentials> {
-  const urlRaw = await callbacks.onPrompt({
-    message:
-      "Login method: leave blank for AWS Builder ID, or paste an IAM Identity Center start URL (https://…)",
-    placeholder: "https://mycompany.awsapps.com/start",
-    allowEmpty: true,
+  const method = await callbacks.onSelect({
+    message: "Select login method:",
+    options: [
+      { id: "builder-id", label: "AWS Builder ID (personal account)" },
+      { id: "idc",        label: "IAM Identity Center (enterprise SSO)" },
+      { id: "sync",       label: "Import from Kiro IDE (auto-sync local DB)" },
+      { id: "desktop",    label: "Desktop refresh token (manual)" },
+    ],
   });
 
-  const startUrl = (urlRaw ?? "").trim();
-  if (!startUrl) {
+  if (!method) throw new Error("Login cancelled");
+
+  // ── Kiro CLI Sync ───────────────────────────────────────────────
+  if (method === "sync") {
+    return loginCliSync(callbacks);
+  }
+
+  // ── Desktop (manual refresh token) ──────────────────────────────
+  if (method === "desktop") {
+    return loginDesktopManual(callbacks);
+  }
+
+  // ── Builder ID ──────────────────────────────────────────────────
+  if (method === "builder-id") {
     return runDeviceCodeFlow(callbacks, BUILDER_ID_START_URL, [BUILDER_ID_REGION], "builder-id");
   }
-  if (!startUrl.startsWith("http")) {
+
+  // ── IdC ─────────────────────────────────────────────────────────
+  const startUrl = (await callbacks.onPrompt({
+    message: "Paste your IAM Identity Center start URL:",
+    placeholder: "https://mycompany.awsapps.com/start",
+    allowEmpty: false,
+  }))?.trim();
+
+  if (!startUrl || !startUrl.startsWith("http")) {
     throw new Error(
-      `Invalid input "${startUrl}" — leave blank for Builder ID, or paste your IdC start URL (https://…)`,
+      `Invalid start URL "${startUrl ?? ""}" — expected https://…`,
     );
   }
 
@@ -257,6 +280,95 @@ export async function loginKiro(callbacks: OAuthLoginCallbacks): Promise<KiroCre
 
   return runDeviceCodeFlow(callbacks, startUrl, regions, "idc");
 }
+
+/**
+ * CLI Sync login: auto-import credentials from Kiro IDE's local SQLite DB.
+ * Fails with a clear message if Kiro IDE is not installed or has no valid tokens.
+ */
+async function loginCliSync(callbacks: OAuthLoginCallbacks): Promise<KiroCredentials> {
+  callbacks.onProgress?.("Scanning for Kiro IDE credentials (~/.kiro/db)…");
+
+  const { importFromKiroCli } = await import("./kiro-cli-sync");
+  const imported = await importFromKiroCli();
+
+  if (!imported || (!imported.accessToken && !imported.refreshToken)) {
+    throw new Error(
+      "No Kiro IDE credentials found.\n" +
+      "Make sure Kiro IDE is installed and you're logged in, then try again.\n" +
+      "Alternatively, use 'desktop' to paste a refresh token manually.",
+    );
+  }
+
+  log.info("Successfully imported credentials from Kiro IDE");
+  callbacks.onProgress?.(
+    `Imported from Kiro IDE (${imported.authMethod}, ${imported.region}` +
+    `${imported.email ? `, ${imported.email}` : ""})`,
+  );
+
+  try {
+    const apiRegion = resolveApiRegion(imported.region);
+    const apiModels = await fetchAvailableModels(imported.accessToken, apiRegion);
+    setCachedDynamicModels(buildModelsFromApi(apiModels));
+    log.info(`Fetched and cached ${apiModels.length} models after CLI sync`);
+  } catch (err) {
+    log.warn(`Failed to fetch models after CLI sync: ${err}`);
+  }
+
+  const refreshPacked = imported.clientId
+    ? `${imported.refreshToken}|${imported.clientId}|${imported.clientSecret ?? ""}|${imported.authMethod}`
+    : `${imported.refreshToken}|||desktop`;
+
+  return {
+    refresh: refreshPacked,
+    access: imported.accessToken,
+    expires: Date.now() + 3600 * 1000 - EXPIRES_BUFFER_MS,
+    clientId: imported.clientId ?? "",
+    clientSecret: imported.clientSecret ?? "",
+    region: imported.region,
+    authMethod: imported.authMethod,
+  };
+}
+
+/**
+ * Desktop manual login: prompt the user for a raw refresh token
+ * and region, then exchange it for an access token via the desktop
+ * auth endpoint.
+ */
+async function loginDesktopManual(callbacks: OAuthLoginCallbacks): Promise<KiroCredentials> {
+  const refreshRaw = await callbacks.onPrompt({
+    message:
+      "Paste your Kiro desktop refresh token\n" +
+      "(find it in ~/.kiro/db/kiro.db → auth_kv table):",
+    placeholder: "refresh-token",
+    allowEmpty: true,
+  });
+
+  const refreshToken = (refreshRaw ?? "").trim();
+  if (!refreshToken) {
+    throw new Error("Login cancelled — no refresh token provided");
+  }
+
+  const regionRaw = await callbacks.onPrompt({
+    message: "Kiro region:",
+    placeholder: "us-east-1",
+    allowEmpty: true,
+  });
+  const region = (regionRaw ?? "").trim() || "us-east-1";
+
+  const refreshCreds: KiroCredentials = {
+    refresh: `${refreshToken}|||desktop`,
+    access: "",
+    expires: 0,
+    clientId: "",
+    clientSecret: "",
+    region,
+    authMethod: "desktop",
+  };
+
+  callbacks.onProgress?.("Exchanging refresh token…");
+  return refreshKiroToken(refreshCreds);
+}
+
 
 async function runDeviceCodeFlow(
   callbacks: OAuthLoginCallbacks,

@@ -24,12 +24,14 @@ import type { KiroModel } from "./models";
 import { kiroModels, resolveKiroModel } from "./models";
 import { ThinkingTagParser } from "./thinking-parser";
 import { countTokens } from "./tokenizer";
+import { KIRO_NATIVE_TOOLS } from "./kiro-tools";
 import {
   buildHistory,
   convertImagesToKiro,
   convertToolsToKiro,
   extractImages,
   getContentText,
+  type KiroEnvState,
   type KiroHistoryEntry,
   type KiroImage,
   type KiroToolResult,
@@ -40,6 +42,12 @@ import {
   TOOL_RESULT_LIMIT,
   truncate,
 } from "./transform";
+import {
+  COMPACTION_THRESHOLD_PCT,
+  resolveOS,
+  SYSTEM_SEED_ACK,
+  SYSTEM_SEED_INSTRUCTION,
+} from "./kiro-defaults";
 
 // ---- Retry / timeout constants -----------------------------------------
 
@@ -234,6 +242,11 @@ interface KiroRequest {
   };
   profileArn?: string;
   agentMode?: string;
+  additionalModelRequestFields?: {
+    output_config?: { effort?: string };
+    thinking?: { type: "adaptive" | "disabled"; display?: "summarized" | "omitted" };
+    max_tokens?: number;
+  };
 }
 
 interface KiroToolCallState {
@@ -352,6 +365,12 @@ export function streamKiro(
         }`;
       }
 
+      // Build envState from the host process (matches real Kiro CLI).
+      const envState: KiroEnvState = {
+        operatingSystem: resolveOS(),
+        currentWorkingDirectory: process.cwd(),
+      };
+
       const conversationId = options?.sessionId ?? crypto.randomUUID();
       let retryCount = 0;
 
@@ -364,6 +383,15 @@ export function streamKiro(
           systemPrepended,
           currentMsgStartIdx,
         } = buildHistory(normalized, kiroModelId, systemPrompt);
+
+        // Inject the synthetic system seed pair at the start of history.
+        // The real Kiro CLI always sends this as the first history entries.
+        const seedInstruction = SYSTEM_SEED_INSTRUCTION.replace("{{modelId}}", kiroModelId);
+        const seedPair: KiroHistoryEntry[] = [
+          { userInputMessage: { content: seedInstruction, origin: "KIRO_CLI" } },
+          { assistantResponseMessage: { content: SYSTEM_SEED_ACK } },
+        ];
+        history.unshift(...seedPair);
 
         const currentMessages = normalized.slice(currentMsgStartIdx);
         const firstMsg = currentMessages[0];
@@ -464,13 +492,39 @@ export function streamKiro(
           }
         }
 
-        let uimc: { toolResults?: KiroToolResult[]; tools?: KiroToolSpec[] } | undefined;
-        if (currentToolResults.length > 0 || (context.tools && context.tools.length > 0)) {
-          uimc = {};
-          if (currentToolResults.length > 0) uimc.toolResults = currentToolResults;
-          if (context.tools?.length) {
-            uimc.tools = convertToolsToKiro(context.tools);
-          }
+        // Wrap content in the Kiro CLI format: context entry + user message.
+        const now = new Date();
+        const tzOffset = -now.getTimezoneOffset();
+        const tzSign = tzOffset >= 0 ? "+" : "-";
+        const tzH = String(Math.floor(Math.abs(tzOffset) / 60)).padStart(2, "0");
+        const tzM = String(Math.abs(tzOffset) % 60).padStart(2, "0");
+        const isoLocal = now.getFullYear() + "-" +
+          String(now.getMonth() + 1).padStart(2, "0") + "-" +
+          String(now.getDate()).padStart(2, "0") + "T" +
+          String(now.getHours()).padStart(2, "0") + ":" +
+          String(now.getMinutes()).padStart(2, "0") + ":" +
+          String(now.getSeconds()).padStart(2, "0") + "." +
+          String(now.getMilliseconds()).padStart(3, "0") +
+          tzSign + tzH + ":" + tzM;
+        const weekday = now.toLocaleDateString("en-US", { weekday: "long" });
+        currentContent =
+          `--- CONTEXT ENTRY BEGIN ---\n` +
+          `Current time: ${weekday}, ${isoLocal}\n` +
+          `--- CONTEXT ENTRY END ---\n\n` +
+          `--- USER MESSAGE BEGIN ---\n` +
+          `${currentContent}\n` +
+          `--- USER MESSAGE END ---`;
+
+        // Always include envState in userInputMessageContext (real client does).
+        let uimc: { envState: KiroEnvState; toolResults?: KiroToolResult[]; tools?: KiroToolSpec[] } = {
+          envState,
+        };
+        if (currentToolResults.length > 0) uimc.toolResults = currentToolResults;
+        if (context.tools?.length) {
+          // Use static Kiro native tool schemas for 1:1 client parity.
+          // Pi's tool names match Kiro's native names; the static schemas
+          // ensure identical descriptions and parameter shapes.
+          uimc.tools = KIRO_NATIVE_TOOLS;
         }
 
         if (firstMsg?.role === "user") {
@@ -493,7 +547,7 @@ export function streamKiro(
                 modelId: kiroModelId,
                 origin: "KIRO_CLI",
                 ...(currentImages ? { images: currentImages } : {}),
-                ...(uimc ? { userInputMessageContext: uimc } : {}),
+                userInputMessageContext: uimc,
               },
             },
             ...(history.length > 0 ? { history } : {}),
@@ -501,6 +555,28 @@ export function streamKiro(
           ...(profileArn ? { profileArn } : {}),
           agentMode: "vibe",
         };
+
+        // Attach adaptive thinking effort when the model supports it.
+        // Pi has 5 levels (minimal…xhigh), Kiro has 5 (low…max).
+        // Pi's extra bottom level (`minimal`) means each maps one up.
+        const EFFORT_MAP: Record<string, string> = {
+          minimal: "low",
+          low: "medium",
+          medium: "high",
+          high: "xhigh",
+          xhigh: "max",
+        };
+        const kiroModel = kiroModels.find((m) => m.id === model.id) as KiroModel | undefined;
+        const supportsEffort = kiroModel?.supportedEfforts && kiroModel.supportedEfforts.length > 0;
+        if (supportsEffort && options?.reasoning && typeof options.reasoning === "string") {
+          const kiroEffort = EFFORT_MAP[options.reasoning];
+          if (kiroEffort && kiroModel!.supportedEfforts!.includes(kiroEffort)) {
+            request.additionalModelRequestFields = {
+              output_config: { effort: kiroEffort },
+            };
+            log.debug("effort.set", { piReasoning: options.reasoning, kiroEffort, model: model.id });
+          }
+        }
 
         // -- HTTP request with capacity-retry inner loop -----------------
         // Emit `start` and arm the hidden-reasoning countdown. The
@@ -765,8 +841,29 @@ export function streamKiro(
             switch (event.type) {
               case "contextUsage": {
                 const pct = event.data.contextUsagePercentage;
-                output.usage.input = Math.round((pct / 100) * model.contextWindow);
+                // Force overflow detection when context nears capacity.
+                // Pi's isContextOverflow() triggers compaction when
+                // usage.input > contextWindow.
+                output.usage.input = pct >= COMPACTION_THRESHOLD_PCT
+                  ? model.contextWindow + 1
+                  : Math.round((pct / 100) * model.contextWindow);
                 receivedContextUsage = true;
+                log.debug("contextUsage", { pct, threshold: COMPACTION_THRESHOLD_PCT, willCompact: pct >= COMPACTION_THRESHOLD_PCT });
+                break;
+              }
+              case "reasoning": {
+                // Native reasoning event from Kiro (Opus 4.7+).
+                // Emit as a complete Pi thinking block.
+                cancelHiddenShim();
+                const thinkIdx = output.content.length;
+                const thinkBlock: ThinkingContent = {
+                  type: "thinking",
+                  thinking: event.data.text,
+                };
+                output.content.push(thinkBlock);
+                stream.push({ type: "thinking_start", contentIndex: thinkIdx, partial: output });
+                stream.push({ type: "thinking_delta", contentIndex: thinkIdx, delta: event.data.text, partial: output });
+                stream.push({ type: "thinking_end", contentIndex: thinkIdx, content: event.data.text, partial: output });
                 break;
               }
               case "content": {

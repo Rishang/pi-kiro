@@ -103,7 +103,7 @@ describe("getContentText", () => {
 });
 
 describe("convertToolsToKiro", () => {
-  it("wraps pi tools in toolSpecification", () => {
+  it("wraps pi tools in toolSpecification with __tool_use_purpose", () => {
     const params = Type.Object({ cmd: Type.String() });
     const tools: Tool[] = [
       {
@@ -114,7 +114,13 @@ describe("convertToolsToKiro", () => {
     ];
     const r = convertToolsToKiro(tools);
     expect(r[0]?.toolSpecification.name).toBe("bash");
-    expect(r[0]?.toolSpecification.inputSchema.json).toEqual(params);
+    const schema = r[0]?.toolSpecification.inputSchema.json as Record<string, unknown>;
+    const props = schema.properties as Record<string, unknown>;
+    expect(props.cmd).toEqual({ type: "string" });
+    expect(props.__tool_use_purpose).toEqual({
+      type: "string",
+      description: "A brief explanation why you are making this tool use.",
+    });
   });
 });
 

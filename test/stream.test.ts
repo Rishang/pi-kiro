@@ -643,7 +643,7 @@ describe("streamKiro", () => {
       }
     }, 30000);
 
-    it("throws immediately when history is empty and too-big error occurs", async () => {
+    it("throws after truncating seed-only history on too-big error", async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: false,
         status: 400,
@@ -652,7 +652,8 @@ describe("streamKiro", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
 
-      // Single message → empty history
+      // Single message → empty user history, but seed pair adds 2 entries.
+      // Truncation strips them before reaching the terminal error.
       const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
 
       const err = events.find((e) => e.type === "error");
@@ -660,8 +661,8 @@ describe("streamKiro", () => {
       if (err?.type === "error") {
         expect(err.error.errorMessage).toMatch(/context_length_exceeded/);
       }
-      // Only 1 call — no truncation retry possible with empty history
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // 1 initial + 2 truncation retries (seed pair shrinks to 0) = 3
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -749,5 +750,76 @@ describe("streamKiro", () => {
         expect(err.error.errorMessage).toMatch(/429/);
       }
     }, 30000);
+  });
+
+  describe("additionalModelRequestFields (effort)", () => {
+    it("sends effort for models with supportedEfforts (Opus 4.8)", async () => {
+      const fetchMock = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":5}');
+      vi.stubGlobal("fetch", fetchMock);
+      await collect(
+        streamKiro(
+          makeModel({
+            id: "claude-opus-4-8",
+            reasoning: true,
+            ...({ reasoningHidden: true, supportedEfforts: ["low", "medium", "high", "xhigh", "max"] } as unknown as Partial<Model<Api>>),
+          }),
+          makeContext(),
+          { apiKey: "tok", reasoning: "high" },
+        ),
+      );
+      const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+      expect(body.additionalModelRequestFields).toBeDefined();
+      expect(body.additionalModelRequestFields.output_config.effort).toBe("xhigh");
+    });
+
+    it("maps pi xhigh to kiro max", async () => {
+      const fetchMock = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":5}');
+      vi.stubGlobal("fetch", fetchMock);
+      await collect(
+        streamKiro(
+          makeModel({
+            id: "claude-opus-4-8",
+            reasoning: true,
+            ...({ reasoningHidden: true, supportedEfforts: ["low", "medium", "high", "xhigh", "max"] } as unknown as Partial<Model<Api>>),
+          }),
+          makeContext(),
+          { apiKey: "tok", reasoning: "xhigh" },
+        ),
+      );
+      const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+      expect(body.additionalModelRequestFields.output_config.effort).toBe("max");
+    });
+
+    it("does not send effort for models without supportedEfforts (Haiku)", async () => {
+      const fetchMock = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":5}');
+      vi.stubGlobal("fetch", fetchMock);
+      await collect(
+        streamKiro(
+          makeModel({ id: "claude-haiku-4-5", reasoning: false }),
+          makeContext(),
+          { apiKey: "tok", reasoning: "high" },
+        ),
+      );
+      const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+      expect(body.additionalModelRequestFields).toBeUndefined();
+    });
+
+    it("does not send effort when reasoning is not set", async () => {
+      const fetchMock = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":5}');
+      vi.stubGlobal("fetch", fetchMock);
+      await collect(
+        streamKiro(
+          makeModel({
+            id: "claude-opus-4-8",
+            reasoning: true,
+            ...({ reasoningHidden: true, supportedEfforts: ["low", "medium", "high", "xhigh", "max"] } as unknown as Partial<Model<Api>>),
+          }),
+          makeContext(),
+          { apiKey: "tok" },
+        ),
+      );
+      const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+      expect(body.additionalModelRequestFields).toBeUndefined();
+    });
   });
 });

@@ -13,7 +13,7 @@
 // pi's /settings view. Until then, users check their usage at
 // https://app.kiro.dev/account/usage.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -60,6 +60,7 @@ interface ProviderModelConfig {
   compat?: Model<Api>["compat"];
   firstTokenTimeout?: number;
   reasoningHidden?: boolean;
+  thinkingLevelMap?: Partial<Record<string, string | null>>;
 }
 
 interface ProviderConfig {
@@ -89,6 +90,15 @@ interface ExtensionAPI {
 
 const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
+/** Pi → Kiro effort mapping. Exposes all 5 Pi thinking levels. */
+const KIRO_THINKING_LEVEL_MAP: Partial<Record<string, string | null>> = {
+  minimal: "low",
+  low: "medium",
+  medium: "high",
+  high: "xhigh",
+  xhigh: "max",
+};
+
 function toProviderModels(defs: KiroModelDef[]): ProviderModelConfig[] {
   return defs.map((d) => ({
     id: d.id,
@@ -100,6 +110,7 @@ function toProviderModels(defs: KiroModelDef[]): ProviderModelConfig[] {
     maxTokens: d.maxTokens,
     firstTokenTimeout: d.firstTokenTimeout,
     ...(d.reasoningHidden ? { reasoningHidden: d.reasoningHidden } : {}),
+    ...(d.reasoning ? { thinkingLevelMap: KIRO_THINKING_LEVEL_MAP } : {}),
   }));
 }
 
@@ -108,9 +119,25 @@ function readKiroCredentials(): { access: string; region: string } | null {
   try {
     const authPath = join(homedir(), ".pi", "agent", "auth.json");
     if (!existsSync(authPath)) return null;
-    const data = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>;
+    const raw = readFileSync(authPath, "utf-8");
+    const data = JSON.parse(raw) as Record<string, unknown>;
     const kiro = data["kiro"] as Record<string, unknown> | undefined;
     if (!kiro?.access || typeof kiro.access !== "string") return null;
+
+    // Self-heal: pi's AuthStorage requires `type: "oauth"` to recognize
+    // stored OAuth credentials.  If it's missing (e.g. a previous migration
+    // or manual edit dropped it), re-inject it so the session doesn't fail
+    // with "No API key found for kiro".
+    if (kiro.type !== "oauth") {
+      log.warn("auth.json kiro entry missing type — injecting type:oauth");
+      try {
+        data["kiro"] = { ...kiro, type: "oauth" };
+        writeFileSync(authPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+      } catch (e) {
+        log.warn(`Failed to self-heal auth.json: ${e}`);
+      }
+    }
+
     return {
       access: kiro.access,
       region: (kiro.region as string) || "us-east-1",
@@ -143,7 +170,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     authHeader: true,
     models: modelDefs,
     oauth: {
-      name: "Kiro (Builder ID / IAM Identity Center)",
+      name: "Kiro (Builder ID / IAM Identity Center.)",
       login: loginKiro,
       refreshToken: refreshKiroToken,
       getApiKey: (cred: OAuthCredentials) => cred.access as string,

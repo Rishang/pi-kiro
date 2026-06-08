@@ -13,6 +13,7 @@ export type KiroStreamEvent =
   | { type: "toolUseInput"; data: { input: string } }
   | { type: "toolUseStop"; data: { stop: boolean } }
   | { type: "contextUsage"; data: { contextUsagePercentage: number } }
+  | { type: "reasoning"; data: { text: string; signature?: string } }
   | { type: "followupPrompt"; data: string }
   | { type: "usage"; data: { inputTokens?: number; outputTokens?: number } }
   | { type: "error"; data: { error: string; message?: string } };
@@ -50,6 +51,17 @@ export function findJsonEnd(text: string, start: number): number {
 export function parseKiroEvent(parsed: Record<string, unknown>): KiroStreamEvent | null {
   if (parsed.content !== undefined) {
     return { type: "content", data: parsed.content as string };
+  }
+
+  if (parsed.reasoningText !== undefined) {
+    const rt = parsed.reasoningText as Record<string, unknown>;
+    return {
+      type: "reasoning",
+      data: {
+        text: ((rt.text ?? rt.Text) || "") as string,
+        signature: (rt.signature ?? rt.Signature) as string | undefined,
+      },
+    };
   }
 
   if (parsed.name && parsed.toolUseId) {
@@ -127,6 +139,7 @@ export function parseKiroEvent(parsed: Record<string, unknown>): KiroStreamEvent
  */
 const EVENT_PATTERNS = [
   '{"content":',
+  '{"reasoningText":',
   '{"name":',
   '{"input":',
   '{"stop":',

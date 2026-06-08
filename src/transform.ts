@@ -15,6 +15,7 @@ import type {
   ToolCall,
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
+import { TOOL_PURPOSE_FIELD } from "./kiro-defaults.ts";
 
 /** Drop assistant messages that ended in error/aborted — partial turns
  *  shouldn't be replayed. */
@@ -53,12 +54,21 @@ export interface KiroToolSpec {
   };
 }
 
+export interface KiroEnvState {
+  operatingSystem: string;
+  currentWorkingDirectory: string;
+}
+
 export interface KiroUserInputMessage {
   content: string;
-  modelId: string;
+  modelId?: string;
   origin: "KIRO_CLI";
   images?: KiroImage[];
-  userInputMessageContext?: { toolResults?: KiroToolResult[]; tools?: KiroToolSpec[] };
+  userInputMessageContext?: {
+    envState?: KiroEnvState;
+    toolResults?: KiroToolResult[];
+    tools?: KiroToolSpec[];
+  };
 }
 
 export interface KiroAssistantResponseMessage {
@@ -125,13 +135,25 @@ export function parseToolArgs(input: unknown): Record<string, unknown> {
 }
 
 export function convertToolsToKiro(tools: Tool[]): KiroToolSpec[] {
-  return tools.map((tool) => ({
-    toolSpecification: {
-      name: tool.name,
-      description: tool.description,
-      inputSchema: { json: tool.parameters as Record<string, unknown> },
-    },
-  }));
+  return tools.map((tool) => {
+    const schema = tool.parameters as Record<string, unknown>;
+    const props = (schema.properties ?? {}) as Record<string, unknown>;
+    return {
+      toolSpecification: {
+        name: tool.name,
+        description: tool.description,
+        inputSchema: {
+          json: {
+            ...schema,
+            properties: {
+              ...props,
+              __tool_use_purpose: TOOL_PURPOSE_FIELD,
+            },
+          },
+        },
+      },
+    };
+  });
 }
 
 /**
@@ -212,7 +234,6 @@ export function buildHistory(
       const images = extractImages(msg);
       const uim: KiroUserInputMessage = {
         content,
-        modelId,
         origin: "KIRO_CLI",
         ...(images.length > 0 ? { images: convertImagesToKiro(images).images } : {}),
       };
@@ -309,7 +330,6 @@ export function buildHistory(
       history.push({
         userInputMessage: {
           content: "Tool results provided.",
-          modelId,
           origin: "KIRO_CLI",
           ...(trImages.length > 0 ? { images: convertImagesToKiro(trImages).images } : {}),
           userInputMessageContext: { toolResults },
