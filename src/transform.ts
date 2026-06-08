@@ -75,6 +75,12 @@ export interface KiroHistoryEntry {
 
 export const TOOL_RESULT_LIMIT = 250_000;
 
+/** Maximum images per message accepted by the Kiro API. */
+export const MAX_KIRO_IMAGES = 4;
+
+/** Maximum decoded size per image (bytes) accepted by the Kiro API. */
+export const MAX_KIRO_IMAGE_BYTES = 3_750_000;
+
 /** Middle-ellipsis truncation: preserve start and end. */
 export function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
@@ -128,13 +134,37 @@ export function convertToolsToKiro(tools: Tool[]): KiroToolSpec[] {
   }));
 }
 
+/**
+ * Convert images to Kiro wire format, enforcing API limits:
+ * - Max {@link MAX_KIRO_IMAGES} images per call
+ * - Max {@link MAX_KIRO_IMAGE_BYTES} decoded bytes per image
+ *
+ * Oversized/excess images are silently dropped and counted in `omitted`.
+ */
 export function convertImagesToKiro(
   images: Array<{ mimeType: string; data: string }>,
-): KiroImage[] {
-  return images.map((img) => ({
-    format: img.mimeType.split("/")[1] || "png",
-    source: { bytes: img.data },
-  }));
+): { images: KiroImage[]; omitted: number } {
+  let omitted = 0;
+  const valid: KiroImage[] = [];
+
+  for (const img of images) {
+    // base64 encodes 3 bytes per 4 chars
+    const estimatedBytes = Math.ceil(img.data.length * 3 / 4);
+    if (estimatedBytes > MAX_KIRO_IMAGE_BYTES) {
+      omitted++;
+      continue;
+    }
+    if (valid.length >= MAX_KIRO_IMAGES) {
+      omitted++;
+      continue;
+    }
+    valid.push({
+      format: img.mimeType.split("/")[1] || "png",
+      source: { bytes: img.data },
+    });
+  }
+
+  return { images: valid, omitted };
 }
 
 // ---- History builder ---------------------------------------------------
@@ -184,7 +214,7 @@ export function buildHistory(
         content,
         modelId,
         origin: "KIRO_CLI",
-        ...(images.length > 0 ? { images: convertImagesToKiro(images) } : {}),
+        ...(images.length > 0 ? { images: convertImagesToKiro(images).images } : {}),
       };
 
       const prev = history[history.length - 1];
@@ -265,7 +295,7 @@ export function buildHistory(
       if (trImages.length > 0) {
         prev.userInputMessage.images = [
           ...(prev.userInputMessage.images ?? []),
-          ...convertImagesToKiro(trImages),
+          ...convertImagesToKiro(trImages).images,
         ];
       }
       if (!prev.userInputMessage.userInputMessageContext) {
@@ -281,12 +311,81 @@ export function buildHistory(
           content: "Tool results provided.",
           modelId,
           origin: "KIRO_CLI",
-          ...(trImages.length > 0 ? { images: convertImagesToKiro(trImages) } : {}),
+          ...(trImages.length > 0 ? { images: convertImagesToKiro(trImages).images } : {}),
           userInputMessageContext: { toolResults },
         },
       });
     }
   }
 
-  return { history, systemPrepended, currentMsgStartIdx };
+  return { history: collapseAgenticLoops(history), systemPrepended, currentMsgStartIdx };
+}
+
+// ---- Agentic loop collapse --------------------------------------------
+
+/**
+ * Collapse consecutive tool-use loops in history. When the agent calls
+ * tools N times in sequence (ASST(toolUses) → USER(toolResults) pairs),
+ * keep text only on the first assistant message and replace subsequent
+ * ones with a short placeholder. This prevents the model from re-deriving
+ * its preamble on every iteration, saving context tokens.
+ */
+export function collapseAgenticLoops(history: KiroHistoryEntry[]): KiroHistoryEntry[] {
+  if (history.length < 4) return history;
+
+  const result: KiroHistoryEntry[] = [];
+  let i = 0;
+
+  while (i < history.length) {
+    const entry = history[i];
+
+    // Detect start of agentic sequence:
+    // ASST with toolUses followed by USER with toolResults
+    if (
+      entry?.assistantResponseMessage?.toolUses &&
+      i + 1 < history.length &&
+      history[i + 1]?.userInputMessage?.userInputMessageContext?.toolResults
+    ) {
+      // Walk forward to find the end of the contiguous sequence
+      let j = i;
+      while (j < history.length) {
+        const asst = history[j];
+        if (!asst?.assistantResponseMessage?.toolUses) break;
+        const nextUser = j + 1 < history.length ? history[j + 1] : null;
+        if (!nextUser?.userInputMessage?.userInputMessageContext?.toolResults) break;
+        j += 2;
+      }
+
+      const pairCount = (j - i) / 2;
+
+      if (pairCount > 1) {
+        // Multi-iteration loop: keep full text on first pair only
+        for (let k = i; k < j; k += 2) {
+          const asst = history[k]!;
+          const user = history[k + 1]!;
+
+          if (k === i) {
+            result.push(asst);
+          } else {
+            result.push({
+              assistantResponseMessage: {
+                content: "[tool calling continues]",
+                toolUses: asst.assistantResponseMessage!.toolUses,
+              },
+            });
+          }
+          result.push(user);
+        }
+      } else {
+        // Single pair — keep as-is
+        result.push(history[i]!, history[i + 1]!);
+      }
+      i = j;
+    } else {
+      result.push(entry!);
+      i++;
+    }
+  }
+
+  return result;
 }

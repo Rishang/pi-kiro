@@ -24,6 +24,7 @@
 
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { log } from "./debug";
+import { isPermanentError } from "./health";
 import {
   fetchAvailableModels,
   buildModelsFromApi,
@@ -74,8 +75,9 @@ export interface KiroCredentials extends OAuthCredentials {
    * Which SSO flow produced this credential.
    * - `builder-id`: AWS Builder ID (personal AWS account, us-east-1).
    * - `idc`: IAM Identity Center (enterprise SSO, any region).
+   * - `desktop`: Kiro IDE native install (bare refresh token, no clientId/clientSecret).
    */
-  authMethod: "builder-id" | "idc";
+  authMethod: "builder-id" | "idc" | "desktop";
 }
 
 interface DeviceAuthResponse {
@@ -332,19 +334,73 @@ export async function refreshKiroToken(
   // pre-existing credentials written before this field was tracked; never
   // invent "builder-id" because we can't tell the difference retroactively.
   const inputMethod = (credentials as Partial<KiroCredentials>).authMethod;
-  const authMethod: "builder-id" | "idc" =
-    inputMethod === "builder-id" || inputMethod === "idc" ? inputMethod : "idc";
-  if (inputMethod !== undefined && inputMethod !== "builder-id" && inputMethod !== "idc") {
+  const authMethod: "builder-id" | "idc" | "desktop" =
+    inputMethod === "builder-id" || inputMethod === "idc" || inputMethod === "desktop"
+      ? inputMethod
+      : "idc";
+  if (
+    inputMethod !== undefined &&
+    inputMethod !== "builder-id" &&
+    inputMethod !== "idc" &&
+    inputMethod !== "desktop"
+  ) {
     // Corrupt or migrated-badly credential. Refresh still works because both
     // methods hit the same endpoint, but future code branching on authMethod
     // would get the wrong answer.
     log.warn(`refreshKiroToken: unrecognized authMethod "${String(inputMethod)}" — defaulting to "idc"`);
   }
 
-  if (!refreshToken || !clientId || !clientSecret || !region) {
+  if (!refreshToken || !region) {
     throw new Error(
-      "Refresh token is missing clientId/clientSecret/region — re-login required",
+      "Refresh token is missing region — re-login required",
     );
+  }
+  if (authMethod !== "desktop" && (!clientId || !clientSecret)) {
+    throw new Error(
+      "Refresh token is missing clientId/clientSecret — re-login required",
+    );
+  }
+
+  // Desktop auth uses Kiro's own auth endpoint (no OIDC client required).
+  if (authMethod === "desktop") {
+    const desktopEndpoint = `https://prod.${region}.auth.desktop.kiro.dev/refreshToken`;
+    const resp = await fetch(desktopEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": "pi-kiro" },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      if (isPermanentError(body)) {
+        throw new Error(`Kiro desktop auth permanently invalid — re-login required: ${body}`);
+      }
+      throw new Error(`Desktop token refresh failed: ${resp.status} ${body}`);
+    }
+
+    const data = (await resp.json()) as {
+      accessToken: string;
+      refreshToken: string;
+      expiresIn?: number;
+    };
+
+    try {
+      const apiRegion = resolveApiRegion(region);
+      const apiModels = await fetchAvailableModels(data.accessToken, apiRegion);
+      setCachedDynamicModels(buildModelsFromApi(apiModels));
+      log.info(`Fetched and cached ${apiModels.length} models after desktop token refresh`);
+    } catch (err) {
+      log.warn(`Failed to fetch models after desktop token refresh: ${err}`);
+    }
+
+    return {
+      refresh: `${data.refreshToken}|||desktop`,
+      access: data.accessToken,
+      expires: Date.now() + (data.expiresIn ?? 3600) * 1000 - EXPIRES_BUFFER_MS,
+      clientId: "",
+      clientSecret: "",
+      region,
+      authMethod: "desktop",
+    };
   }
 
   const endpoint = `https://oidc.${region}.amazonaws.com/token`;
@@ -353,7 +409,13 @@ export async function refreshKiroToken(
     headers: { "Content-Type": "application/json", "User-Agent": "pi-kiro" },
     body: JSON.stringify({ clientId, clientSecret, refreshToken, grantType: "refresh_token" }),
   });
-  if (!resp.ok) throw new Error(`Token refresh failed: ${resp.status}`);
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    if (isPermanentError(body)) {
+      throw new Error(`Kiro auth permanently invalid — re-login required: ${body}`);
+    }
+    throw new Error(`Token refresh failed: ${resp.status} ${body}`);
+  }
 
   const data = (await resp.json()) as {
     accessToken: string;

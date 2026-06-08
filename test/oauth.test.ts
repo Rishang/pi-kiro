@@ -8,7 +8,7 @@ function okJson(body: unknown) {
   return { ok: true, json: () => Promise.resolve(body) };
 }
 function fail(status: number) {
-  return { ok: false, status };
+  return { ok: false, status, text: () => Promise.resolve(`error ${status}`) };
 }
 
 function scriptedPrompts(answers: string[]): OAuthLoginCallbacks {
@@ -285,7 +285,7 @@ describe("refreshKiroToken", () => {
   it("throws when region is missing", async () => {
     await expect(
       refreshKiroToken({ refresh: "RT|CID|SEC|idc", access: "x", expires: 0 }),
-    ).rejects.toThrow(/missing clientId\/clientSecret\/region/);
+    ).rejects.toThrow(/missing region/);
   });
 
   it("throws when refresh token is missing pieces", async () => {

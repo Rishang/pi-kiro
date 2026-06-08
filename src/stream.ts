@@ -19,6 +19,7 @@ import type {
 import { calculateCost, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { log, previewChunk } from "./debug";
 import { parseKiroEvents } from "./event-parser";
+import { isPermanentError } from "./health";
 import type { KiroModel } from "./models";
 import { kiroModels, resolveKiroModel } from "./models";
 import { ThinkingTagParser } from "./thinking-parser";
@@ -428,7 +429,8 @@ export function streamKiro(
             }
           }
           if (toolResultImages.length > 0) {
-            const converted = convertImagesToKiro(toolResultImages);
+            const { images: converted, omitted } = convertImagesToKiro(toolResultImages);
+            if (omitted > 0) log.warn(`${omitted} tool-result image(s) omitted (size/count limit)`);
             currentImages = currentImages ? [...currentImages, ...converted] : converted;
           }
           currentContent = currentToolResults.length > 0 ? "Tool results provided." : "Please proceed with the task.";
@@ -450,7 +452,8 @@ export function streamKiro(
             }
           }
           if (toolResultImages.length > 0) {
-            const converted = convertImagesToKiro(toolResultImages);
+            const { images: converted, omitted } = convertImagesToKiro(toolResultImages);
+            if (omitted > 0) log.warn(`${omitted} tool-result image(s) omitted (size/count limit)`);
             currentImages = currentImages ? [...currentImages, ...converted] : converted;
           }
           currentContent = "Tool results provided.";
@@ -472,7 +475,11 @@ export function streamKiro(
 
         if (firstMsg?.role === "user") {
           const imgs = extractImages(firstMsg);
-          if (imgs.length > 0) currentImages = convertImagesToKiro(imgs);
+          if (imgs.length > 0) {
+            const { images: converted, omitted } = convertImagesToKiro(imgs);
+            if (omitted > 0) log.warn(`${omitted} user image(s) omitted (size/count limit)`);
+            currentImages = converted;
+          }
         }
 
         const request: KiroRequest = {
@@ -604,6 +611,16 @@ export function streamKiro(
             );
             await abortableDelay(delayMs, options?.signal);
             continue;
+          }
+          if (response.status === 401) {
+            const permanent = isPermanentError(errText);
+            if (permanent) {
+              profileArnCache.delete(endpoint);
+              throw new Error(
+                `Kiro API error: credentials permanently invalid — run /login kiro to re-authenticate. ${errText}`,
+              );
+            }
+            // Non-permanent 401 falls through to the generic throw below
           }
           if (response.status === 403) {
             // Access token was accepted earlier (profileArn resolved) but is

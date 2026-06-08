@@ -9,9 +9,13 @@ import { Type } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
   buildHistory,
+  collapseAgenticLoops,
   convertImagesToKiro,
   convertToolsToKiro,
   getContentText,
+  type KiroHistoryEntry,
+  MAX_KIRO_IMAGE_BYTES,
+  MAX_KIRO_IMAGES,
   normalizeMessages,
   TOOL_RESULT_LIMIT,
   truncate,
@@ -116,14 +120,116 @@ describe("convertToolsToKiro", () => {
 
 describe("convertImagesToKiro", () => {
   it("derives format from mime", () => {
-    expect(convertImagesToKiro([{ mimeType: "image/png", data: "b64" }])).toEqual([
-      { format: "png", source: { bytes: "b64" } },
-    ]);
+    const { images, omitted } = convertImagesToKiro([{ mimeType: "image/png", data: "b64" }]);
+    expect(images).toEqual([{ format: "png", source: { bytes: "b64" } }]);
+    expect(omitted).toBe(0);
   });
   it("falls back to png for malformed mime", () => {
-    expect(convertImagesToKiro([{ mimeType: "weird", data: "b64" }])).toEqual([
-      { format: "png", source: { bytes: "b64" } },
+    const { images, omitted } = convertImagesToKiro([{ mimeType: "weird", data: "b64" }]);
+    expect(images).toEqual([{ format: "png", source: { bytes: "b64" } }]);
+    expect(omitted).toBe(0);
+  });
+
+  it("omits images exceeding MAX_KIRO_IMAGE_BYTES", () => {
+    // base64 encodes 3 bytes per 4 chars, so 5_000_001 chars ≈ 3.75M bytes
+    const oversized = "A".repeat(5_000_001);
+    const small = "QQ=="; // 1 byte
+    const { images, omitted } = convertImagesToKiro([
+      { mimeType: "image/png", data: oversized },
+      { mimeType: "image/jpeg", data: small },
     ]);
+    expect(images).toHaveLength(1);
+    expect(images[0]?.format).toBe("jpeg");
+    expect(omitted).toBe(1);
+  });
+
+  it("omits images exceeding MAX_KIRO_IMAGES count", () => {
+    const imgs = Array.from({ length: 6 }, (_, i) => ({
+      mimeType: `image/png`,
+      data: `img${i}`,
+    }));
+    const { images, omitted } = convertImagesToKiro(imgs);
+    expect(images).toHaveLength(MAX_KIRO_IMAGES);
+    expect(omitted).toBe(2);
+  });
+});
+
+describe("collapseAgenticLoops", () => {
+  const asstWithTool = (text: string, toolName: string): KiroHistoryEntry => ({
+    assistantResponseMessage: {
+      content: text,
+      toolUses: [{ name: toolName, toolUseId: `id-${toolName}`, input: {} }],
+    },
+  });
+
+  const userWithToolResult = (toolName: string): KiroHistoryEntry => ({
+    userInputMessage: {
+      content: "Tool results provided.",
+      modelId: "M",
+      origin: "KIRO_CLI" as const,
+      userInputMessageContext: {
+        toolResults: [{
+          content: [{ text: "ok" }],
+          status: "success" as const,
+          toolUseId: `id-${toolName}`,
+        }],
+      },
+    },
+  });
+
+  it("returns unchanged for short history (< 4 entries)", () => {
+    const h: KiroHistoryEntry[] = [
+      { userInputMessage: { content: "hi", modelId: "M", origin: "KIRO_CLI" } },
+    ];
+    expect(collapseAgenticLoops(h)).toEqual(h);
+  });
+
+  it("returns unchanged for single tool-use pair", () => {
+    const h: KiroHistoryEntry[] = [
+      { userInputMessage: { content: "hi", modelId: "M", origin: "KIRO_CLI" } },
+      asstWithTool("Let me check", "bash"),
+      userWithToolResult("bash"),
+      { userInputMessage: { content: "next", modelId: "M", origin: "KIRO_CLI" } },
+    ];
+    const result = collapseAgenticLoops(h);
+    expect(result).toHaveLength(4);
+    expect(result[1]?.assistantResponseMessage?.content).toBe("Let me check");
+  });
+
+  it("collapses 3 consecutive tool-use pairs", () => {
+    const h: KiroHistoryEntry[] = [
+      asstWithTool("First thought", "bash"),
+      userWithToolResult("bash"),
+      asstWithTool("Second thought", "read"),
+      userWithToolResult("read"),
+      asstWithTool("Third thought", "write"),
+      userWithToolResult("write"),
+    ];
+    const result = collapseAgenticLoops(h);
+    expect(result).toHaveLength(6); // same count, but text replaced
+    // First pair keeps its text
+    expect(result[0]?.assistantResponseMessage?.content).toBe("First thought");
+    // Subsequent pairs get placeholder text
+    expect(result[2]?.assistantResponseMessage?.content).toBe("[tool calling continues]");
+    expect(result[4]?.assistantResponseMessage?.content).toBe("[tool calling continues]");
+    // Tool uses are preserved on all
+    expect(result[2]?.assistantResponseMessage?.toolUses?.[0]?.name).toBe("read");
+    expect(result[4]?.assistantResponseMessage?.toolUses?.[0]?.name).toBe("write");
+  });
+
+  it("does not collapse non-tool entries between loops", () => {
+    const h: KiroHistoryEntry[] = [
+      asstWithTool("First", "bash"),
+      userWithToolResult("bash"),
+      { userInputMessage: { content: "plain user msg", modelId: "M", origin: "KIRO_CLI" } },
+      asstWithTool("After break", "read"),
+      userWithToolResult("read"),
+    ];
+    const result = collapseAgenticLoops(h);
+    // The plain user message breaks the sequence, so no collapse
+    expect(result[0]?.assistantResponseMessage?.content).toBe("First");
+    expect(result[2]?.userInputMessage?.content).toBe("plain user msg");
+    expect(result[3]?.assistantResponseMessage?.content).toBe("After break");
   });
 });
 
