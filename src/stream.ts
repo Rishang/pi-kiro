@@ -21,10 +21,10 @@ import { log, previewChunk } from "./debug";
 import { parseKiroEvents } from "./event-parser";
 import { isPermanentError } from "./health";
 import type { KiroModel } from "./models";
-import { kiroModels, resolveKiroModel } from "./models";
+import { kiroModels, resolveKiroModel, getCachedDynamicModels } from "./models";
 import { ThinkingTagParser } from "./thinking-parser";
 import { countTokens } from "./tokenizer";
-import { KIRO_NATIVE_TOOLS } from "./kiro-tools";
+
 import {
   buildHistory,
   convertImagesToKiro,
@@ -189,7 +189,7 @@ export function resetProfileArnCache(skipResolution = false): void {
   profileArnSkipResolution = skipResolution;
 }
 
-async function resolveProfileArn(accessToken: string, endpoint: string): Promise<string | undefined> {
+export async function resolveProfileArn(accessToken: string, endpoint: string): Promise<string | undefined> {
   if (profileArnSkipResolution) return undefined;
   const cached = profileArnCache.get(endpoint);
   if (cached !== undefined) return cached;
@@ -521,10 +521,13 @@ export function streamKiro(
         };
         if (currentToolResults.length > 0) uimc.toolResults = currentToolResults;
         if (context.tools?.length) {
-          // Use static Kiro native tool schemas for 1:1 client parity.
-          // Pi's tool names match Kiro's native names; the static schemas
-          // ensure identical descriptions and parameter shapes.
-          uimc.tools = KIRO_NATIVE_TOOLS;
+          uimc.tools = context.tools.map(t => ({
+            toolSpecification: {
+              name: t.name,
+              description: t.description,
+              inputSchema: { json: t.parameters as Record<string, unknown> }
+            }
+          }));
         }
 
         if (firstMsg?.role === "user") {
@@ -566,16 +569,35 @@ export function streamKiro(
           high: "xhigh",
           xhigh: "max",
         };
-        const kiroModel = kiroModels.find((m) => m.id === model.id) as KiroModel | undefined;
-        const supportsEffort = kiroModel?.supportedEfforts && kiroModel.supportedEfforts.length > 0;
-        if (supportsEffort && options?.reasoning && typeof options.reasoning === "string") {
+        const staticModel = kiroModels.find((m) => m.id === model.id) as KiroModel | undefined;
+        const dynamicModel = getCachedDynamicModels()?.find((m) => m.id === model.id);
+        const supportedEfforts = staticModel?.supportedEfforts ?? dynamicModel?.supportedEfforts;
+        const supportsThinkingConfig = staticModel?.supportsThinkingConfig ?? dynamicModel?.supportsThinkingConfig;
+        
+        if (supportsThinkingConfig || supportedEfforts) {
+          request.additionalModelRequestFields = request.additionalModelRequestFields || {};
+        }
+
+        if (supportedEfforts && supportedEfforts.length > 0 && options?.reasoning && typeof options.reasoning === "string") {
           const kiroEffort = EFFORT_MAP[options.reasoning];
-          if (kiroEffort && kiroModel!.supportedEfforts!.includes(kiroEffort)) {
-            request.additionalModelRequestFields = {
-              output_config: { effort: kiroEffort },
-            };
+          if (kiroEffort && supportedEfforts.includes(kiroEffort)) {
+            request.additionalModelRequestFields!.output_config = { effort: kiroEffort };
             log.debug("effort.set", { piReasoning: options.reasoning, kiroEffort, model: model.id });
           }
+        }
+
+        // If Pi hides thinking, tell Kiro to omit it, otherwise ask Kiro to stream it.
+        // If options.reasoning is "off" or missing, we don't necessarily want adaptive thinking.
+        // But if thinkingEnabled is true, we want to ensure it streams.
+        if (supportsThinkingConfig && thinkingEnabled) {
+          // In Pi, if reasoning is enabled but UI hides it, options.reasoning is still a string (effort level).
+          // Wait, Pi UI hide thinking toggle is pure UI. So we always want Kiro to stream it ("summarized")
+          // so Pi can see the blocks and hide them in the UI if needed!
+          request.additionalModelRequestFields!.thinking = {
+            type: "adaptive",
+            display: "summarized",
+          };
+          log.debug("thinking.set", { type: "adaptive", display: "summarized", model: model.id });
         }
 
         // -- HTTP request with capacity-retry inner loop -----------------

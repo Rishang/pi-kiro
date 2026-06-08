@@ -110,7 +110,12 @@ function toProviderModels(defs: KiroModelDef[]): ProviderModelConfig[] {
     maxTokens: d.maxTokens,
     firstTokenTimeout: d.firstTokenTimeout,
     ...(d.reasoningHidden ? { reasoningHidden: d.reasoningHidden } : {}),
-    ...(d.reasoning ? { thinkingLevelMap: KIRO_THINKING_LEVEL_MAP } : {}),
+    ...(d.reasoning
+      ? {
+          thinkingLevelMap: KIRO_THINKING_LEVEL_MAP,
+          compat: { forceAdaptiveThinking: true },
+        }
+      : {}),
   }));
 }
 
@@ -149,7 +154,7 @@ function readKiroCredentials(): { access: string; region: string } | null {
 
 export default async function (pi: ExtensionAPI): Promise<void> {
   // Fetch available models from Kiro API. Fallback to hardcoded list if fetch fails or no credentials.
-  let modelDefs = kiroModels as ProviderModelConfig[];
+  let modelDefs = toProviderModels(kiroModels as unknown as KiroModelDef[]);
   const creds = readKiroCredentials();
   if (creds) {
     try {
@@ -170,7 +175,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     authHeader: true,
     models: modelDefs,
     oauth: {
-      name: "Kiro (Builder ID / IAM Identity Center.)",
+      name: "Kiro (Builder ID / IAM Identity Center)",
       login: loginKiro,
       refreshToken: refreshKiroToken,
       getApiKey: (cred: OAuthCredentials) => cred.access as string,
@@ -188,8 +193,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             baseUrl: resolveRuntimeUrl(apiRegion),
           })) as unknown as Model<Api>[];
         } else {
-          const kiroOnly = kiroModels.map((m) => ({
+          const fallbackDefs = toProviderModels(kiroModels as unknown as KiroModelDef[]);
+          const kiroOnly = fallbackDefs.map((m) => ({
             ...m,
+            provider: "kiro" as const,
+            api: "kiro-api" as const,
             baseUrl: resolveRuntimeUrl(apiRegion),
           }));
           kiroModelsToRegister = filterModelsByRegion(kiroOnly, apiRegion) as unknown as Model<Api>[];

@@ -97,10 +97,10 @@ export async function importFromKiroCli(): Promise<KiroCliCredentials | null> {
     // If neither is available, return null gracefully.
     let Database: any;
     try {
-      // @ts-expect-error — bun:sqlite is a Bun-only built-in
       Database = (await import("bun:sqlite")).Database;
     } catch {
       try {
+        // @ts-expect-error - better-sqlite3 is an optional peer dependency
         Database = (await import("better-sqlite3")).default;
       } catch {
         log.debug("No SQLite driver available (need bun:sqlite or better-sqlite3)");

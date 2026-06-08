@@ -1,3 +1,5 @@
+import { resolveProfileArn } from "./stream.js";
+
 // Kiro model catalog + ID conversion + region mapping.
 //
 // Model IDs use dashes in pi (e.g. "claude-sonnet-4-6") and dots in the Kiro
@@ -209,6 +211,8 @@ export interface KiroModel {
    * in the GenerateAssistantResponse request body.
    */
   supportedEfforts?: string[];
+  /** Whether the model supports `thinking` block configuration. */
+  supportsThinkingConfig?: boolean;
 }
 
 export const kiroModels: KiroModel[] = [
@@ -436,7 +440,14 @@ export async function fetchAvailableModels(
   accessToken: string,
   apiRegion: string,
 ): Promise<KiroApiModel[]> {
-  const url = `https://management.${apiRegion}.kiro.dev/ListAvailableModels?origin=AI_EDITOR`;
+  const runtimeUrl = `https://runtime.${apiRegion}.kiro.dev/`;
+  const profileArn = await resolveProfileArn(accessToken, runtimeUrl);
+  
+  if (!profileArn) {
+    throw new Error("Missing profileArn: cannot fetch available models.");
+  }
+
+  const url = `https://management.${apiRegion}.kiro.dev/ListAvailableModels?origin=KIRO_CLI&profileArn=${encodeURIComponent(profileArn)}`;
   const resp = await fetch(url, {
     method: "GET",
     headers: {
@@ -455,7 +466,7 @@ export async function fetchAvailableModels(
 /** Model families known to support reasoning/thinking. */
 const REASONING_FAMILIES = new Set([
   "claude-sonnet", "claude-opus",
-  "deepseek", "kimi", "glm", "qwen3-coder", "agi-nova",
+  "deepseek", "kimi", "glm", "qwen", "agi-nova", "minimax"
 ]);
 
 function isReasoningModel(dotId: string): boolean {
@@ -481,6 +492,7 @@ export interface KiroModelDef {
   firstTokenTimeout?: number;
   reasoningHidden?: boolean;
   supportedEfforts?: string[];
+  supportsThinkingConfig?: boolean;
 }
 
 /**
@@ -505,6 +517,8 @@ export function buildModelsFromApi(apiModels: KiroApiModel[]): KiroModelDef[] {
       ? effortEnum
       : undefined;
 
+    const supportsThinkingConfig = !!m.additionalModelRequestFieldsSchema?.properties?.thinking;
+
     return {
       id: dashId,
       name: m.modelName,
@@ -514,8 +528,8 @@ export function buildModelsFromApi(apiModels: KiroApiModel[]): KiroModelDef[] {
       maxTokens: m.tokenLimits?.maxOutputTokens ?? 8_192,
       firstTokenTimeout: firstTokenTimeout(m.modelId),
       // Per-model overrides for known special cases
-      ...(m.modelId === "claude-opus-4.7" || m.modelId === "claude-opus-4.8" ? { reasoningHidden: true } : {}),
       ...(supportedEfforts ? { supportedEfforts } : {}),
+      ...(supportsThinkingConfig ? { supportsThinkingConfig } : {}),
     };
   });
 }
