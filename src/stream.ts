@@ -52,7 +52,7 @@ import {
 // ---- Retry / timeout constants -----------------------------------------
 
 const FIRST_TOKEN_TIMEOUT_DEFAULT_MS = 90_000;
-const IDLE_TIMEOUT_MS = 300_000;
+const IDLE_TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 3;
 const MAX_RETRY_DELAY_MS = 10_000;
 
