@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- Add Claude Fable 5 and Claude Opus 4.8 to the static model catalog, region allowlists, and README.
+
 ## 0.2.1
 
 ### Patch Changes
