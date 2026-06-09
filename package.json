@@ -54,6 +54,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "check": "bun run typecheck && bun run test",
     "changeset": "changeset",
     "version": "changeset version",
@@ -66,6 +67,7 @@
     "@changesets/cli": "^2.27.0",
     "@earendil-works/pi-ai": "^0.78.1",
     "@types/bun": "latest",
+    "@vitest/coverage-v8": "2.1.9",
     "vitest": "^2.0.0"
   },
   "peerDependencies": {
@@ -75,5 +77,8 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
