@@ -718,15 +718,17 @@ export function streamKiro(
         if (context.tools?.length) {
           // Bedrock / Amazon Q strict schema requirements:
           // 1. No $schema
-          // 2. No additionalProperties anywhere
-          // 3. No empty required arrays
+          // 2. No empty required arrays
+          // Note: additionalProperties IS supported by Bedrock and MUST be
+          // preserved — it constrains the model to only use declared properties,
+          // preventing hallucinated fields and schema-mismatch errors on the host.
           const deepCleanSchema = (obj: any): any => {
             if (Array.isArray(obj)) {
               return obj.map(deepCleanSchema);
             } else if (obj !== null && typeof obj === "object") {
               const cleaned: any = {};
               for (const [k, v] of Object.entries(obj)) {
-                if (k === "$schema" || k === "additionalProperties") continue;
+                if (k === "$schema") continue;
                 if (k === "required" && Array.isArray(v) && v.length === 0) continue;
                 cleaned[k] = deepCleanSchema(v);
               }
