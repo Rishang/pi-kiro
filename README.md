@@ -8,7 +8,7 @@ to pi's coding agent.
 ## Install
 
 ```bash
-pi install npm:pi-kiro
+pi install npm:@javargasm/pi-kiro
 ```
 
 ## Login
@@ -53,10 +53,10 @@ bun run test
 
 ## Using outside pi (standalone)
 
-The provider logic (OAuth + streaming) is also exposed at `pi-kiro/core` so
-you can embed it into your own UI — e.g. an [opentui](https://github.com/sst/opentui)
-frontend, a backend service, or a custom CLI — without pulling
-`pi-coding-agent`.
+The provider logic (OAuth + streaming) is also exposed at
+`@javargasm/pi-kiro/core` so you can embed it into your own UI — e.g. an
+[opentui](https://github.com/sst/opentui) frontend, a backend service, or a
+custom CLI — without pulling `pi-coding-agent`.
 
 ```ts
 import {
@@ -65,7 +65,7 @@ import {
   streamKiro,
   kiroModels,
   type KiroCredentials,
-} from "pi-kiro/core";
+} from "@javargasm/pi-kiro/core";
 
 // 1. Login. Your app implements pi-ai's OAuthLoginCallbacks (onPrompt,
 //    onAuth, onProgress, signal) however it wants — a TUI dialog, a web

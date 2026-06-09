@@ -1,13 +1,29 @@
 {
-  "name": "pi-kiro",
+  "name": "@javargasm/pi-kiro",
   "version": "0.1.4",
+  "description": "Kiro provider for the pi coding agent: AWS Builder ID / IAM Identity Center login and the CodeWhisperer streaming API, exposing the Kiro Claude model family.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hongyilyu/pi-kiro.git"
+    "url": "git+https://github.com/javargasm/pi-kiro.git"
   },
-  "keywords": ["pi-package"],
+  "homepage": "https://github.com/javargasm/pi-kiro#readme",
+  "bugs": {
+    "url": "https://github.com/javargasm/pi-kiro/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "provider",
+    "kiro",
+    "aws",
+    "codewhisperer",
+    "amazon-q",
+    "claude"
+  ],
   "pi": {
     "extensions": ["./dist/extension.js"]
   },
@@ -36,9 +52,16 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "bun run build"
+    "check": "bun run typecheck && bun run test",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "publish:dry-run": "npm publish --dry-run",
+    "prepack": "bun run build",
+    "prepublishOnly": "bun run check"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.5.0",
+    "@changesets/cli": "^2.27.0",
     "@earendil-works/pi-ai": "^0.78.1",
     "@types/bun": "latest",
     "vitest": "^2.0.0"
