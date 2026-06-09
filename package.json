@@ -1,6 +1,6 @@
 {
   "name": "@javargasm/pi-kiro",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Kiro provider for the pi coding agent: AWS Builder ID / IAM Identity Center login and the CodeWhisperer streaming API, exposing the Kiro Claude model family.",
   "type": "module",
   "license": "MIT",
