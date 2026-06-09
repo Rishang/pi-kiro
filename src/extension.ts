@@ -99,7 +99,7 @@ const KIRO_THINKING_LEVEL_MAP: Partial<Record<string, string | null>> = {
   xhigh: "max",
 };
 
-function toProviderModels(defs: KiroModelDef[]): ProviderModelConfig[] {
+function toProviderModels(defs: readonly KiroModelDef[]): ProviderModelConfig[] {
   return defs.map((d) => ({
     id: d.id,
     name: d.name,
@@ -154,7 +154,9 @@ function readKiroCredentials(): { access: string; region: string } | null {
 
 export default async function (pi: ExtensionAPI): Promise<void> {
   // Fetch available models from Kiro API. Fallback to hardcoded list if fetch fails or no credentials.
-  let modelDefs = toProviderModels(kiroModels as unknown as KiroModelDef[]);
+  // `kiroModels` (KiroModel[]) is structurally a superset of KiroModelDef, so
+  // it's directly assignable to `toProviderModels` without a cast.
+  let modelDefs = toProviderModels(kiroModels);
   const creds = readKiroCredentials();
   if (creds) {
     try {
@@ -183,25 +185,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         const apiRegion = resolveApiRegion((cred as KiroCredentials).region);
         const nonKiro = allModels.filter((m) => m.provider !== "kiro");
 
-        let kiroModelsToRegister: Model<Api>[];
+        // Stamp provider/api/baseUrl onto a ProviderModelConfig to produce a
+        // concrete Model<Api>. `Api` and `Provider` are both `… | string`,
+        // so "kiro-api"/"kiro" are assignable without a cast.
+        const toKiroModel = (m: ProviderModelConfig): Model<Api> => ({
+          ...m,
+          api: "kiro-api",
+          provider: "kiro",
+          baseUrl: resolveRuntimeUrl(apiRegion),
+        });
+
         const dynamicDefs = getCachedDynamicModels();
-        if (dynamicDefs && dynamicDefs.length > 0) {
-          kiroModelsToRegister = toProviderModels(dynamicDefs).map((m) => ({
-            ...m,
-            provider: "kiro" as const,
-            api: "kiro-api" as const,
-            baseUrl: resolveRuntimeUrl(apiRegion),
-          })) as unknown as Model<Api>[];
-        } else {
-          const fallbackDefs = toProviderModels(kiroModels as unknown as KiroModelDef[]);
-          const kiroOnly = fallbackDefs.map((m) => ({
-            ...m,
-            provider: "kiro" as const,
-            api: "kiro-api" as const,
-            baseUrl: resolveRuntimeUrl(apiRegion),
-          }));
-          kiroModelsToRegister = filterModelsByRegion(kiroOnly, apiRegion) as unknown as Model<Api>[];
-        }
+        const kiroModelsToRegister: Model<Api>[] =
+          dynamicDefs && dynamicDefs.length > 0
+            ? toProviderModels(dynamicDefs).map(toKiroModel)
+            : filterModelsByRegion(toProviderModels(kiroModels).map(toKiroModel), apiRegion);
 
         return [...nonKiro, ...kiroModelsToRegister];
       },
