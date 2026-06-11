@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+### Patch Changes
+
+- Fix Kiro CLI/IDE token import and refresh sync. Node runtimes now fall back to the system sqlite3 CLI for local DB access, refresh write-back only updates the exact imported CLI token row, and IDE/desktop refresh tokens are never written into kiro-cli storage.
+
 ## 0.4.0
 
 ### Minor Changes
