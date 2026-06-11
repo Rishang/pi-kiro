@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- Import from Kiro now reads the real kiro-cli SQLite DB at `data.sqlite3` in the platform's standard data directory (previously a non-existent `~/.kiro/db/kiro.db` path inherited from the old `pi-provider-kiro`). When the kiro-cli DB is unavailable, falls back to the AWS SSO OIDC cache JSON at `~/.aws/sso/cache/kiro-auth-token.json` (the file Kiro IDE writes). The primary path now also includes the OIDC clientId/secret when present, so users with kiro-cli installed can refresh via the OIDC endpoint instead of the desktop endpoint.
+
 ## 0.3.0
 
 ### Minor Changes
