@@ -148,11 +148,17 @@ item numbers in comments.
     `"odic"`, `"oidc"`, or `"idc"`. Falls back to the AWS SSO OIDC
     cache file at `~/.aws/sso/cache/kiro-auth-token.json` (or
     `%USERPROFILE%\.aws\sso\cache\kiro-auth-token.json` on Windows)
-    when the kiro-cli DB is missing/locked/unreadable. The cache is
+    when the kiro-cli DB is missing/locked/unreadable. DB access first
+    tries `bun:sqlite`, then optional `better-sqlite3`, then the system
+    `sqlite3` CLI with SQL passed over stdin so refresh tokens are not
+    exposed in process argv. The cache is
     written by Kiro IDE (the GUI), not kiro-cli, and contains
     `{accessToken, refreshToken, expiresAt, clientIdHash, authMethod,
     provider, region}`. `authMethod: "IdC"` maps to internal `"idc"`,
     missing/empty `region` defaults to `"us-east-1"`. Because the cache
     has no OIDC clientId/clientSecret, refresh is routed through the
     desktop endpoint (`authMethod: "desktop"`). The fallback is
-    automatic; the user sees no separate prompt.
+    automatic; the user sees no separate prompt. Refresh write-back to
+    the kiro-cli DB is allowed only when the credential originated from
+    the DB and carries the exact imported `auth_kv` token key; IDE SSO
+    cache / desktop refresh tokens are not written into kiro-cli storage.

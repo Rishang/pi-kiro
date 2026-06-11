@@ -387,6 +387,62 @@ describe("refreshKiroToken", () => {
     );
   });
 
+  it("does not sync desktop/IDE refresh tokens back to the kiro-cli DB", async () => {
+    vi.mocked(existsSync).mockClear();
+    vi.mocked(readFileSync).mockClear();
+    vi.mocked(existsSync).mockReturnValue(false);
+    fetchMock.mockResolvedValueOnce(
+      okJson({ accessToken: "AT2", refreshToken: "RT2", expiresIn: 3600 }),
+    );
+
+    await refreshKiroToken({
+      refresh: "RT|||desktop",
+      access: "old",
+      expires: 0,
+      region: "us-east-1",
+      authMethod: "desktop",
+      kiroSyncSource: "kiro-sso-cache",
+    } as any);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(existsSync).not.toHaveBeenCalled();
+    expect(readFileSync).not.toHaveBeenCalled();
+  });
+
+  it("does not retry the same imported refresh-only credential in expired cascade layers", async () => {
+    const { homedir } = await import("node:os");
+    const { join } = await import("node:path");
+    const cachePath = join(homedir(), ".aws", "sso", "cache", "kiro-auth-token.json");
+
+    vi.mocked(existsSync).mockImplementation((p) => p === cachePath);
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({
+        refreshToken: "IMPORTED_RT",
+        authMethod: "IdC",
+        region: "eu-central-1",
+      }),
+    );
+    fetchMock
+      .mockResolvedValueOnce(fail(401))
+      .mockResolvedValueOnce(fail(401));
+
+    await expect(
+      refreshKiroToken({
+        refresh: "OLD_RT|CID|SEC|idc",
+        access: "old",
+        expires: 0,
+        region: "eu-central-1",
+        authMethod: "idc",
+      } as any),
+    ).rejects.toThrow(/no different expired credentials/);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://oidc.eu-central-1.amazonaws.com/token");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://prod.eu-central-1.auth.desktop.kiro.dev/refreshToken",
+    );
+  });
+
   it("loginCliSync falls back to SSO cache when SQLite DB is absent, returns aligned desktop credentials", async () => {
     // Repro of the user-reported flow: ~/.kiro/db missing, but
     // ~/.aws/sso/cache/kiro-auth-token.json present with IdC tokens and
@@ -490,4 +546,3 @@ describe("refreshKiroToken", () => {
     );
   });
 });
-

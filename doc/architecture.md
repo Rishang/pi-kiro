@@ -39,12 +39,16 @@ indistinguishable from the real Kiro CLI and to smooth the login UX:
 - **`kiro-cli-sync.ts`** — optional zero-friction login. Primary read is
   the kiro-cli SQLite DB at `data.sqlite3` in the platform's standard
   data directory; that gives us the OIDC clientId/secret for proper OIDC
-  refresh. Fallback when the DB is missing/locked/unreadable is the AWS
-  SSO OIDC cache JSON at `~/.aws/sso/cache/kiro-auth-token.json` (the
-  file Kiro IDE writes); that has tokens + region but no OIDC creds, so
-  the resulting credential uses the desktop refresh endpoint. The module
-  also writes refreshed tokens back to the kiro-cli DB for
-  bidirectional sync.
+  refresh. DB access tries `bun:sqlite`, optional `better-sqlite3`, then
+  the system `sqlite3` CLI so Node-based pi runtimes can still read/write
+  the DB without a native package. Fallback when the DB is
+  missing/locked/unreadable is the AWS SSO OIDC cache JSON at
+  `~/.aws/sso/cache/kiro-auth-token.json` (the file Kiro IDE writes);
+  that has tokens + region but no OIDC creds, so the resulting credential
+  uses the desktop refresh endpoint. The module
+  writes refreshed tokens back only to the exact kiro-cli DB token row
+  that produced the credential; IDE/desktop refresh tokens are not synced
+  into CLI storage.
 - **`health.ts`** — classifies error strings as permanent (expired/revoked
   grants → surface a re-login error) vs transient (let the retry loop run).
 

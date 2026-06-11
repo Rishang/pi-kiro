@@ -31,7 +31,7 @@ import {
   resolveApiRegion,
   setCachedDynamicModels,
 } from "./models";
-import type { KiroCliCredentials } from "./kiro-cli-sync";
+import type { KiroCliCredentials, KiroCredentialSource } from "./kiro-cli-sync";
 
 export const BUILDER_ID_START_URL = "https://view.awsapps.com/start";
 export const BUILDER_ID_REGION = "us-east-1";
@@ -79,6 +79,10 @@ export interface KiroCredentials extends OAuthCredentials {
    * - `desktop`: Kiro IDE native install (bare refresh token, no clientId/clientSecret).
    */
   authMethod: "builder-id" | "idc" | "desktop";
+  /** Local Kiro source, used only to decide safe CLI DB write-back. */
+  kiroSyncSource?: KiroCredentialSource;
+  /** Exact `auth_kv.key` imported from the kiro-cli DB. */
+  kiroSyncTokenKey?: string;
 }
 
 interface DeviceAuthResponse {
@@ -431,9 +435,17 @@ async function runDeviceCodeFlow(
 
 /**
  * Sync refreshed credentials back to the Kiro CLI DB.
- * Fire-and-forget — a failed write-back is non-fatal.
+ * Fire-and-forget — a failed write-back is non-fatal. Only credentials
+ * imported from a specific kiro-cli DB token row are eligible; Kiro IDE SSO
+ * cache / desktop refresh tokens are a different token family and must not be
+ * written into the CLI DB.
  */
 async function syncBackToKiroCli(result: KiroCredentials): Promise<void> {
+  if (result.kiroSyncSource !== "kiro-cli-db" || !result.kiroSyncTokenKey) {
+    log.debug("Credential sync-back skipped: credential did not originate from kiro-cli DB");
+    return;
+  }
+
   try {
     const { saveKiroCliCredentials } = await import("./kiro-cli-sync");
     const synced = await saveKiroCliCredentials({
@@ -441,6 +453,8 @@ async function syncBackToKiroCli(result: KiroCredentials): Promise<void> {
       refreshToken: result.refresh.split("|")[0] ?? "",
       region: result.region,
       authMethod: result.authMethod === "builder-id" ? "idc" : result.authMethod,
+      source: result.kiroSyncSource,
+      tokenKey: result.kiroSyncTokenKey,
     });
     if (synced) log.info("Synced refreshed credentials back to Kiro CLI DB");
   } catch (err) {
@@ -477,6 +491,8 @@ function kiroCredsFromCliImport(imported: KiroCliCredentials): KiroCredentials {
     clientSecret: imported.clientSecret ?? "",
     region: imported.region,
     authMethod,
+    kiroSyncSource: imported.source,
+    kiroSyncTokenKey: imported.tokenKey,
   };
 }
 
@@ -538,6 +554,8 @@ async function refreshTokenInner(credentials: KiroCredentials): Promise<KiroCred
       clientSecret: "",
       region,
       authMethod: "desktop",
+      kiroSyncSource: credentials.kiroSyncSource,
+      kiroSyncTokenKey: credentials.kiroSyncTokenKey,
     };
   }
 
@@ -575,6 +593,8 @@ async function refreshTokenInner(credentials: KiroCredentials): Promise<KiroCred
     clientSecret,
     region,
     authMethod,
+    kiroSyncSource: credentials.kiroSyncSource,
+    kiroSyncTokenKey: credentials.kiroSyncTokenKey,
   };
 }
 
@@ -670,14 +690,15 @@ export async function refreshKiroToken(
   try {
     log.debug("refresh.cascade: layer 4 — expired kiro-cli import");
     const { getKiroCliCredentialsAllowExpired } = await import("./kiro-cli-sync");
-    expiredImport = await getKiroCliCredentialsAllowExpired();
-    if (expiredImport?.accessToken && expiredImport !== freshImport) {
+    expiredImport = await getKiroCliCredentialsAllowExpired(freshImport);
+    if (expiredImport?.accessToken) {
       const result = kiroCredsFromCliImport(expiredImport);
       log.info("refresh.cascade: layer 4 succeeded — using expired kiro-cli credentials");
       return result;
+    } else {
+      errors.push("L4(expired-import): no different expired credentials");
+      log.debug("refresh.cascade: layer 4 — no additional expired credentials");
     }
-    errors.push("L4(expired-import): no different expired credentials");
-    log.debug("refresh.cascade: layer 4 — no additional expired credentials");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     errors.push(`L4(expired-import): ${msg}`);

@@ -11,7 +11,29 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { EventEmitter } = await import("node:events");
+  return {
+    ...actual,
+    spawn: vi.fn(() => {
+      const child = new EventEmitter() as any;
+      child.stdout = new EventEmitter();
+      child.stdout.setEncoding = vi.fn();
+      child.stderr = new EventEmitter();
+      child.stderr.setEncoding = vi.fn();
+      child.stdin = {
+        end: vi.fn(() => queueMicrotask(() => child.emit("error", new Error("sqlite3 missing")))),
+      };
+      child.kill = vi.fn();
+      return child;
+    }),
+  };
+});
+
 import { existsSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,13 +41,37 @@ import {
   importFromKiroSsoCache,
   getKiroCliCredentialsAllowExpired,
   saveKiroCliCredentials,
+  selectKiroTokenRowForWrite,
 } from "../src/kiro-cli-sync";
 
 const existsSyncMock = vi.mocked(existsSync);
 const readFileSyncMock = vi.mocked(readFileSync);
+const spawnMock = vi.mocked(spawn);
 
 /** SSO cache path as resolved by kiro-cli-sync on the current platform. */
 const ssoCachePath = join(homedir(), ".aws", "sso", "cache", "kiro-auth-token.json");
+
+function mockSqliteCli(outputs: string[], stdinWrites: string[] = []): void {
+  spawnMock.mockImplementation(() => {
+    const output = outputs.shift() ?? "[]";
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stdout.setEncoding = vi.fn();
+    child.stderr = new EventEmitter();
+    child.stderr.setEncoding = vi.fn();
+    child.stdin = {
+      end: vi.fn((input: string) => {
+        stdinWrites.push(input);
+        queueMicrotask(() => {
+          child.stdout.emit("data", output);
+          child.emit("close", 0);
+        });
+      }),
+    };
+    child.kill = vi.fn();
+    return child;
+  });
+}
 
 describe("kiro-cli-sync", () => {
   describe("importFromKiroCli", () => {
@@ -49,6 +95,21 @@ describe("kiro-cli-sync", () => {
       const resultB = await getKiroCliCredentialsAllowExpired();
       expect(resultA).toEqual(resultB);
     });
+
+    it("can exclude the same already-tried imported credential", async () => {
+      existsSyncMock.mockImplementation((p) => p === ssoCachePath);
+      readFileSyncMock.mockReturnValue(
+        JSON.stringify({ accessToken: "AT", refreshToken: "RT", authMethod: "IdC" }),
+      );
+      const result = await getKiroCliCredentialsAllowExpired({
+        accessToken: "AT",
+        refreshToken: "RT",
+        region: "us-east-1",
+        authMethod: "idc",
+        source: "kiro-sso-cache",
+      });
+      expect(result).toBeNull();
+    });
   });
 
   describe("saveKiroCliCredentials", () => {
@@ -63,17 +124,114 @@ describe("kiro-cli-sync", () => {
       expect(result).toBe(false);
     });
 
-    it("returns false when no SQLite driver is available", async () => {
+    it("returns false when no SQLite driver or sqlite3 CLI is available", async () => {
       existsSyncMock.mockReturnValue(true);
       // In test env neither bun:sqlite nor better-sqlite3 is available,
-      // so the function should gracefully return false.
+      // and the default sqlite3 CLI mock errors, so this should gracefully
+      // return false.
       const result = await saveKiroCliCredentials({
         accessToken: "AT",
         refreshToken: "RT",
         region: "us-east-1",
         authMethod: "desktop",
+        source: "kiro-cli-db",
+        tokenKey: "kirocli:social:token",
       });
       expect(result).toBe(false);
+    });
+
+    it("refuses direct write-back for non-DB credentials", async () => {
+      spawnMock.mockClear();
+      existsSyncMock.mockReturnValue(true);
+      const result = await saveKiroCliCredentials({
+        accessToken: "AT",
+        refreshToken: "RT",
+        region: "us-east-1",
+        authMethod: "desktop",
+        source: "kiro-sso-cache",
+      });
+      expect(result).toBe(false);
+      expect(spawnMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("sqlite3 CLI fallback", () => {
+    it("imports from the kiro-cli DB when native SQLite drivers are unavailable", async () => {
+      existsSyncMock.mockImplementation((p) =>
+        typeof p === "string" && p.endsWith(join("kiro-cli", "data.sqlite3")),
+      );
+      mockSqliteCli([
+        JSON.stringify([
+          {
+            key: "kirocli:odic:device-registration",
+            value: JSON.stringify({ client_id: "CID", client_secret: "SEC" }),
+          },
+          {
+            key: "kirocli:odic:token",
+            value: JSON.stringify({
+              accessToken: "AT",
+              refreshToken: "RT",
+              region: "eu-central-1",
+            }),
+          },
+        ]),
+        "[]",
+      ]);
+
+      const result = await importFromKiroCli();
+
+      expect(result).toEqual({
+        accessToken: "AT",
+        refreshToken: "RT",
+        clientId: "CID",
+        clientSecret: "SEC",
+        region: "eu-central-1",
+        authMethod: "idc",
+        profileArn: undefined,
+        email: undefined,
+        source: "kiro-cli-db",
+        tokenKey: "kirocli:odic:token",
+      });
+      expect(spawnMock).toHaveBeenCalledWith(
+        "sqlite3",
+        expect.arrayContaining(["-readonly", "-json"]),
+        expect.objectContaining({ stdio: "pipe" }),
+      );
+    });
+
+    it("writes refreshed DB credentials through sqlite3 CLI without putting tokens in argv", async () => {
+      existsSyncMock.mockImplementation((p) =>
+        typeof p === "string" && p.endsWith(join("kiro-cli", "data.sqlite3")),
+      );
+      const stdinWrites: string[] = [];
+      mockSqliteCli([
+        JSON.stringify([
+          {
+            key: "kirocli:social:token",
+            value: JSON.stringify({ accessToken: "SOCIAL_AT", refreshToken: "SOCIAL_RT" }),
+          },
+          {
+            key: "kirocli:odic:token",
+            value: JSON.stringify({ accessToken: "OLD_AT", refreshToken: "OLD_RT" }),
+          },
+        ]),
+        JSON.stringify([{ changes: 1 }]),
+      ], stdinWrites);
+
+      const result = await saveKiroCliCredentials({
+        accessToken: "NEW_AT",
+        refreshToken: "NEW_RT",
+        region: "eu-central-1",
+        authMethod: "idc",
+        source: "kiro-cli-db",
+        tokenKey: "kirocli:odic:token",
+      });
+
+      expect(result).toBe(true);
+      expect(stdinWrites[1]).toContain("WHERE key = 'kirocli:odic:token'");
+      expect(stdinWrites[1]).not.toContain("kirocli:social:token");
+      const argv = spawnMock.mock.calls.flatMap((call) => call[1] ?? []).join(" ");
+      expect(argv).not.toContain("NEW_RT");
     });
   });
 
@@ -104,6 +262,7 @@ describe("kiro-cli-sync", () => {
         refreshToken: "RT",
         region: "eu-central-1",
         authMethod: "idc",
+        source: "kiro-sso-cache",
       });
       expect(readFileSyncMock).toHaveBeenCalledWith(ssoCachePath, "utf8");
     });
@@ -158,6 +317,7 @@ describe("kiro-cli-sync", () => {
         refreshToken: "RT",
         region: "eu-central-1",
         authMethod: "idc",
+        source: "kiro-sso-cache",
       });
     });
   });
@@ -318,6 +478,37 @@ describe("kiro-cli-sync", () => {
 
     it("does NOT misclassify :social: as IdC", () => {
       expect(isIdcKey("kirocli:social:token")).toBe(false);
+    });
+  });
+
+  describe("kiro-cli DB write-back row selection", () => {
+    const rows = [
+      { key: "kirocli:social:token", value: "{}" },
+      { key: "kirocli:odic:token", value: "{}" },
+      { key: "kirocli:odic:device-registration", value: "{}" },
+    ];
+
+    it("updates the exact imported token key when present", () => {
+      const row = selectKiroTokenRowForWrite(rows, {
+        authMethod: "idc",
+        tokenKey: "kirocli:odic:token",
+      });
+      expect(row?.key).toBe("kirocli:odic:token");
+    });
+
+    it("does not fall back to another token family when exact key is missing", () => {
+      const row = selectKiroTokenRowForWrite(rows, {
+        authMethod: "idc",
+        tokenKey: "kirocli:missing:token",
+      });
+      expect(row).toBeUndefined();
+    });
+
+    it("does not select a write row without the exact imported tokenKey", () => {
+      const idcRow = selectKiroTokenRowForWrite(rows, { authMethod: "idc" });
+      const desktopRow = selectKiroTokenRowForWrite(rows, { authMethod: "desktop" });
+      expect(idcRow).toBeUndefined();
+      expect(desktopRow).toBeUndefined();
     });
   });
 
