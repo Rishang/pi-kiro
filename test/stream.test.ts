@@ -999,7 +999,7 @@ describe("streamKiro", () => {
         ),
       );
       const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
-      expect(body.additionalModelRequestFields).toBeUndefined();
+      expect(body.additionalModelRequestFields?.output_config).toBeUndefined();
     });
   });
 });

@@ -38,7 +38,7 @@ import {
   type KiroModelDef,
 } from "./models";
 import { loginKiro, refreshKiroToken, type KiroCredentials } from "./oauth";
-import { streamKiro } from "./stream";
+import { streamKiro, seedProfileArn } from "./stream";
 import { log } from "./debug";
 
 // Local structural subset of pi's ExtensionAPI / ProviderConfig. pi-kiro
@@ -120,7 +120,7 @@ function toProviderModels(defs: readonly KiroModelDef[]): ProviderModelConfig[] 
 }
 
 /** Read kiro credentials from pi's auth.json if available. */
-function readKiroCredentials(): { access: string; region: string } | null {
+function readKiroCredentials(): { access: string; region: string; profileArn?: string } | null {
   try {
     const authPath = join(homedir(), ".pi", "agent", "auth.json");
     if (!existsSync(authPath)) return null;
@@ -143,9 +143,14 @@ function readKiroCredentials(): { access: string; region: string } | null {
       }
     }
 
+    // profileArn may be stored in metadata by the login callback
+    const metadata = kiro.metadata as Record<string, unknown> | undefined;
+    const profileArn = typeof metadata?.profileArn === "string" ? metadata.profileArn : undefined;
+
     return {
       access: kiro.access,
       region: (kiro.region as string) || "us-east-1",
+      profileArn,
     };
   } catch {
     return null;
@@ -161,7 +166,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   if (creds) {
     try {
       const apiRegion = resolveApiRegion(creds.region);
-      const apiModels = await fetchAvailableModels(creds.access, apiRegion);
+      // Seed profileArn cache from auth.json if available, avoiding
+      // a round-trip to ListAvailableProfiles.
+      if (creds.profileArn) {
+        const runtimeUrl = resolveRuntimeUrl(apiRegion);
+        seedProfileArn(runtimeUrl + "/", creds.profileArn);
+      }
+      const apiModels = await fetchAvailableModels(creds.access, apiRegion, creds.profileArn);
       const dynamicDefs = buildModelsFromApi(apiModels);
       setCachedDynamicModels(dynamicDefs);
       modelDefs = toProviderModels(dynamicDefs);

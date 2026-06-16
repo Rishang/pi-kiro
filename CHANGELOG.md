@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3
+
+### Patch Changes
+
+- Port profileArn improvements from opencode-kiro: seed profileArn cache from auth.json on startup to avoid ListAvailableProfiles round-trip, add fallbackProfileArn parameter to fetchAvailableModels, and declare supportsThinkingConfig on Claude 4.6+/4.7/4.8/Fable 5 static models.
+
 ## 0.4.2
 
 ### Patch Changes

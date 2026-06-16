@@ -229,6 +229,7 @@ export const kiroModels: KiroModel[] = [
     maxTokens: 128_000,
     firstTokenTimeout: 180_000,
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    supportsThinkingConfig: true,
   },
   {
     ...KIRO_DEFAULTS,
@@ -240,6 +241,7 @@ export const kiroModels: KiroModel[] = [
     maxTokens: 128_000,
     firstTokenTimeout: 180_000,
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    supportsThinkingConfig: true,
   },
   {
     ...KIRO_DEFAULTS,
@@ -251,6 +253,7 @@ export const kiroModels: KiroModel[] = [
     maxTokens: 128_000,
     firstTokenTimeout: 180_000,
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    supportsThinkingConfig: true,
   },
   {
     ...KIRO_DEFAULTS,
@@ -261,6 +264,7 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 1_000_000,
     maxTokens: 64_000,
     supportedEfforts: ["low", "medium", "high", "max"],
+    supportsThinkingConfig: true,
   },
   {
     ...KIRO_DEFAULTS,
@@ -271,6 +275,7 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 1_000_000,
     maxTokens: 64_000,
     supportedEfforts: ["low", "medium", "high", "max"],
+    supportsThinkingConfig: true,
   },
   {
     ...KIRO_DEFAULTS,
@@ -281,6 +286,7 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 1_000_000,
     maxTokens: 64_000,
     supportedEfforts: ["low", "medium", "high", "max"],
+    supportsThinkingConfig: true,
   },
   {
     ...KIRO_DEFAULTS,
@@ -291,6 +297,7 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 1_000_000,
     maxTokens: 64_000,
     supportedEfforts: ["low", "medium", "high", "max"],
+    supportsThinkingConfig: true,
   },
   {
     ...KIRO_DEFAULTS,
@@ -453,10 +460,15 @@ export interface KiroApiModel {
 export async function fetchAvailableModels(
   accessToken: string,
   apiRegion: string,
+  fallbackProfileArn?: string,
 ): Promise<KiroApiModel[]> {
   const runtimeUrl = `https://runtime.${apiRegion}.kiro.dev/`;
-  const profileArn = await resolveProfileArn(accessToken, runtimeUrl);
+  let profileArn = await resolveProfileArn(accessToken, runtimeUrl);
   
+  if (!profileArn && fallbackProfileArn) {
+    profileArn = fallbackProfileArn;
+  }
+
   if (!profileArn) {
     throw new Error("Missing profileArn: cannot fetch available models.");
   }

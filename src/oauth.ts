@@ -312,7 +312,7 @@ async function loginCliSync(callbacks: OAuthLoginCallbacks): Promise<KiroCredent
 
   try {
     const apiRegion = resolveApiRegion(imported.region);
-    const apiModels = await fetchAvailableModels(imported.accessToken, apiRegion);
+    const apiModels = await fetchAvailableModels(imported.accessToken, apiRegion, imported.profileArn);
     setCachedDynamicModels(buildModelsFromApi(apiModels));
     log.info(`Fetched and cached ${apiModels.length} models after CLI sync`);
   } catch (err) {

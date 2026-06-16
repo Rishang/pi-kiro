@@ -188,6 +188,17 @@ export function resetProfileArnCache(skipResolution = false): void {
   profileArnSkipResolution = skipResolution;
 }
 
+/**
+ * Pre-seed the profileArn cache for a given endpoint. When set,
+ * `resolveProfileArn` returns the seeded value without hitting the
+ * management endpoint. Use this to inject a known profileArn from
+ * external sources (e.g. Kiro CLI auth.json) as a fallback when the
+ * management API returns 400.
+ */
+export function seedProfileArn(endpoint: string, arn: string): void {
+  profileArnCache.set(endpoint, arn);
+}
+
 export async function resolveProfileArn(accessToken: string, endpoint: string): Promise<string | undefined> {
   if (profileArnSkipResolution) return undefined;
   const cached = profileArnCache.get(endpoint);
