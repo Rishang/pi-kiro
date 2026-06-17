@@ -27,7 +27,7 @@ describe("extension registration", () => {
 
     expect(registerProvider).toHaveBeenCalledOnce();
     const [name, config] = registerProvider.mock.calls[0] as [string, Record<string, unknown>];
-    expect(name).toBe("kiro");
+    expect(name).toBe("kiro AWS");
     expect(config.baseUrl).toBe("https://runtime.us-east-1.kiro.dev");
     expect(config.api).toBe("kiro-api");
     expect(Array.isArray(config.models)).toBe(true);

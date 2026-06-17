@@ -343,7 +343,7 @@ describe("buildHistory", () => {
     }
   });
 
-  it("serializes thinking blocks into assistant content", () => {
+  it("drops unsigned thinking blocks from assistant history (no inline XML, no reasoningContent)", () => {
     const a = assistant("");
     a.content = [
       { type: "thinking", thinking: "reasoning" },
@@ -352,8 +352,26 @@ describe("buildHistory", () => {
     const msgs: Message[] = [user("q"), a, user("followup")];
     const { history } = buildHistory(msgs, "M");
     const arm = history.find((h) => h.assistantResponseMessage);
-    expect(arm?.assistantResponseMessage?.content).toContain("<thinking>reasoning</thinking>");
-    expect(arm?.assistantResponseMessage?.content).toContain("answer");
+    // Without a valid signature, thinking is silently dropped to avoid
+    // Bedrock's THINKING_SIGNATURE_INVALID rejection.
+    expect(arm?.assistantResponseMessage?.content).toBe("answer");
+    expect(arm?.assistantResponseMessage?.content).not.toContain("<thinking>");
+    expect(arm?.assistantResponseMessage?.reasoningContent).toBeUndefined();
+  });
+
+  it("puts signed thinking blocks into reasoningContent", () => {
+    const a = assistant("");
+    a.content = [
+      { type: "thinking", thinking: "deep thought", thinkingSignature: "sig123" } as any,
+      { type: "text", text: "answer" },
+    ];
+    const msgs: Message[] = [user("q"), a, user("followup")];
+    const { history } = buildHistory(msgs, "M");
+    const arm = history.find((h) => h.assistantResponseMessage);
+    expect(arm?.assistantResponseMessage?.content).toBe("answer");
+    expect(arm?.assistantResponseMessage?.reasoningContent).toEqual({
+      reasoningText: { text: "deep thought", signature: "sig123" },
+    });
   });
 
   it("drops empty assistant messages with no content and no tool uses", () => {

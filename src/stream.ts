@@ -346,11 +346,16 @@ export function streamKiro(
         if (options?.signal?.aborted) throw options.signal.reason;
 
         const normalized = normalizeMessages(context.messages);
+        // NOTE: systemPrompt is NOT passed to buildHistory. It contains the
+        // <thinking_mode>enabled</thinking_mode> directive which, when replayed
+        // in history, causes Bedrock to expect a reasoningContent.signature on
+        // the following assistant response — triggering THINKING_SIGNATURE_INVALID.
+        // The thinking directive only belongs in the current message (or seed).
         const {
           history,
-          systemPrepended,
+          systemPrepended: _systemPrepended,
           currentMsgStartIdx,
-        } = buildHistory(normalized, kiroModelId, systemPrompt);
+        } = buildHistory(normalized, kiroModelId);
 
         // Inject the synthetic system seed pair at the start of history.
         // The real Kiro CLI always sends this as the first history entries.
@@ -370,13 +375,18 @@ export function streamKiro(
         if (firstMsg?.role === "assistant") {
           const am = firstMsg;
           let armContent = "";
+          let armReasoningText = "";
+          let armReasoningSignature = "";
           const armToolUses: Array<{ name: string; toolUseId: string; input: Record<string, unknown> }> = [];
           if (Array.isArray(am.content)) {
             for (const b of am.content) {
               if (b.type === "text") {
                 armContent += (b as TextContent).text;
               } else if (b.type === "thinking") {
-                armContent = `<thinking>${(b as unknown as { thinking: string }).thinking}</thinking>\n\n${armContent}`;
+                // Accumulate thinking text + signature for the reasoningContent field.
+                const tb = b as unknown as { thinking: string; thinkingSignature?: string };
+                armReasoningText += tb.thinking;
+                if (tb.thinkingSignature) armReasoningSignature = tb.thinkingSignature;
               } else if (b.type === "toolCall") {
                 const tc = b as ToolCall;
                 armToolUses.push({
@@ -387,8 +397,13 @@ export function streamKiro(
               }
             }
           }
-          if (armContent || armToolUses.length > 0) {
+          const hasReasoning = armReasoningText.length > 0;
+          if (armContent || armToolUses.length > 0 || hasReasoning) {
             const last = history[history.length - 1];
+            // Only include reasoningContent when we have a valid signature.
+            const reasoningContent = hasReasoning && armReasoningSignature
+              ? { reasoningText: { text: armReasoningText, signature: armReasoningSignature } }
+              : undefined;
             if (last && !last.userInputMessage && last.assistantResponseMessage) {
               last.assistantResponseMessage.content += `\n\n${armContent}`;
               if (armToolUses.length > 0) {
@@ -397,11 +412,15 @@ export function streamKiro(
                   ...armToolUses,
                 ];
               }
+              if (reasoningContent) {
+                last.assistantResponseMessage.reasoningContent = reasoningContent;
+              }
             } else {
               history.push({
                 assistantResponseMessage: {
                   content: armContent,
                   ...(armToolUses.length > 0 ? { toolUses: armToolUses } : {}),
+                  ...(reasoningContent ? { reasoningContent } : {}),
                 },
               });
             }
@@ -455,7 +474,7 @@ export function streamKiro(
           currentContent = "Tool results provided.";
         } else if (firstMsg?.role === "user") {
           currentContent = typeof firstMsg.content === "string" ? firstMsg.content : getContentText(firstMsg);
-          if (systemPrompt && !systemPrepended) {
+          if (systemPrompt) {
             currentContent = `${systemPrompt}\n\n${currentContent}`;
           }
         }

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.7
+
+### Patch Changes
+
+- fix: use reasoningContent with signature for thinking history instead of inline XML tags
+
+  Bedrock rejects replayed history with THINKING_SIGNATURE_INVALID when thinking
+  blocks use inline `<thinking>` XML tags without the cryptographic signature.
+  Now accumulates thinking text and signature from upstream content blocks and
+  sends them as proper `reasoningContent.reasoningText` with `text` + `signature`.
+  Silently drops reasoning when the signature is missing rather than crashing.
+
+  Also adds opt-in file-based debug logging (KIRO_FILE_LOG) for API interactions.
+
 ## 0.4.6
 
 ### Patch Changes

@@ -73,6 +73,12 @@ export interface KiroUserInputMessage {
 export interface KiroAssistantResponseMessage {
   content: string;
   toolUses?: KiroToolUse[];
+  reasoningContent?: {
+    reasoningText: {
+      text: string;
+      signature: string;
+    };
+  };
 }
 
 export interface KiroHistoryEntry {
@@ -244,13 +250,21 @@ export function buildHistory(
 
     if (msg.role === "assistant") {
       let armContent = "";
+      let armReasoningText = "";
+      let armReasoningSignature = "";
       const armToolUses: KiroToolUse[] = [];
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
           if (block.type === "text") {
             armContent += (block as TextContent).text;
           } else if (block.type === "thinking") {
-            armContent = `<thinking>${(block as ThinkingContent).thinking}</thinking>\n\n${armContent}`;
+            // Accumulate thinking text + signature for the reasoningContent
+            // field. Must NOT use inline <thinking> XML tags — Bedrock
+            // rejects replayed history with THINKING_SIGNATURE_INVALID when
+            // the signature is missing or corrupted.
+            const tb = block as ThinkingContent;
+            armReasoningText += tb.thinking;
+            if (tb.thinkingSignature) armReasoningSignature = tb.thinkingSignature;
           } else if (block.type === "toolCall") {
             const tc = block as ToolCall;
             armToolUses.push({
@@ -261,11 +275,18 @@ export function buildHistory(
           }
         }
       }
-      if (!armContent && armToolUses.length === 0) continue;
+      const hasReasoning = armReasoningText.length > 0;
+      if (!armContent && armToolUses.length === 0 && !hasReasoning) continue;
+      // Only include reasoningContent when we have a valid signature.
+      // Bedrock rejects empty/missing signatures with THINKING_SIGNATURE_INVALID.
+      const reasoningContent = hasReasoning && armReasoningSignature
+        ? { reasoningText: { text: armReasoningText, signature: armReasoningSignature } }
+        : undefined;
       history.push({
         assistantResponseMessage: {
           content: armContent,
           ...(armToolUses.length > 0 ? { toolUses: armToolUses } : {}),
+          ...(reasoningContent ? { reasoningContent } : {}),
         },
       });
       continue;

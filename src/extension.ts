@@ -269,7 +269,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     );
   }
 
-  pi.registerProvider("kiro", {
+  pi.registerProvider("kiro AWS", {
     baseUrl: "https://runtime.us-east-1.kiro.dev",
     api: "kiro-api",
     authHeader: true,
