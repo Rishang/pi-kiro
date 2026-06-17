@@ -131,39 +131,54 @@ as `context_length_exceeded`, which pi's compactor recognizes and handles.
 
 ## OAuth flow
 
-Two login methods, both using AWS SSO-OIDC device-code:
+Three login methods:
 
-- **Builder ID** (personal) — fixed start URL
-  `https://view.awsapps.com/start`, fixed region `us-east-1`.
-- **IdC** (enterprise) — user-supplied start URL
+- **Builder ID** (personal) — social sign-in via `https://app.kiro.dev/signin`
+  with PKCE (S256). Starts a localhost callback server on port 49153,
+  exchanges the authorization code for tokens via
+  `POST https://prod.us-east-1.auth.desktop.kiro.dev/oauth/token`.
+  Returns `profileArn` immediately. Fixed region `us-east-1`.
+- **IdC** (enterprise) — AWS SSO-OIDC device-code flow. User-supplied start URL
   (e.g. `https://mycompany.awsapps.com/start`); region is either supplied by
   the user or auto-detected by probing common AWS regions.
+- **Desktop** — manual refresh token import from Kiro IDE.
 
 ```
 loginKiro(callbacks)
-  ├── prompt: blank → Builder ID, URL → IdC
-  ├── (IdC) prompt: region (or blank to probe)
-  ├── POST /client/register      → { clientId, clientSecret }
-  ├── POST /device_authorization → { userCode, verificationUriComplete, deviceCode }
-  ├── callbacks.onAuth({ url, instructions: "Your code: XXXX" })
-  └── poll POST /token until {accessToken, refreshToken}
+  ├── (Builder ID — social sign-in)
+  │   ├── generate PKCE: verifier + challenge (S256)
+  │   ├── start localhost callback server on :49153
+  │   ├── build sign-in URL: https://app.kiro.dev/signin?code_challenge=…&state=…&redirect_uri=…
+  │   ├── callbacks.onAuth({ url })   — opens browser
+  │   ├── wait for callback with ?code=…&state=…
+  │   └── POST /oauth/token → { accessToken, refreshToken, profileArn }
+  │
+  ├── (IdC — device code)
+  │   ├── POST /client/register      → { clientId, clientSecret }
+  │   ├── POST /device_authorization → { userCode, verificationUriComplete, deviceCode }
+  │   ├── callbacks.onAuth({ url, instructions: "Your code: XXXX" })
+  │   └── poll POST /token until {accessToken, refreshToken}
 
 refreshKiroToken(credentials)
-  └── POST https://oidc.{region}.amazonaws.com/token
-        {grantType: "refresh_token", clientId, clientSecret, refreshToken}
+  ├── (social / desktop) POST https://prod.{region}.auth.desktop.kiro.dev/refreshToken
+  │                       {refreshToken}
+  └── (idc / builder-id)  POST https://oidc.{region}.amazonaws.com/token
+                           {grantType: "refresh_token", clientId, clientSecret, refreshToken}
 ```
 
 Credentials shape (internal extension of `OAuthCredentials`):
 
 ```typescript
 interface KiroCredentials extends OAuthCredentials {
-  refresh: string;       // `${refreshToken}|${clientId}|${clientSecret}|${authMethod}`
+  refresh: string;       // social/desktop: `${refreshToken}|||social`
+                         // idc/builder-id: `${refreshToken}|${clientId}|${clientSecret}|${authMethod}`
   access: string;        // current access token
   expires: number;       // ms epoch, with 5-min buffer subtracted
   clientId: string;
   clientSecret: string;
   region: string;        // SSO region (Builder ID: us-east-1; IdC: probed or supplied)
-  authMethod: "builder-id" | "idc";
+  authMethod: "builder-id" | "idc" | "desktop" | "social";
+  profileArn?: string;   // returned immediately by social flow
 }
 ```
 

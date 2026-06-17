@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.5
+
+### Patch Changes
+
+- fix: resolve profileArn automatically for Builder ID accounts
+
+  Builder ID device-code login never receives a profileArn, which prevented
+  model fetching and streaming. Now the startup resolves it via
+  `ListAvailableProfiles` and persists it to auth.json.
+
 ## 0.4.4
 
 ### Patch Changes

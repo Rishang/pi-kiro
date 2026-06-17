@@ -127,8 +127,13 @@ item numbers in comments.
 
 ## OAuth / credentials
 
-47. Device-code flow with standard AWS SSO-OIDC endpoints (us-east-1 only
-    for Builder ID).
+47. Builder ID uses social sign-in (PKCE + authorization code) via
+    `https://app.kiro.dev/signin` with a localhost callback server on
+    port 49153. Token exchange via
+    `POST https://prod.us-east-1.auth.desktop.kiro.dev/oauth/token`
+    with `{code, code_verifier, redirect_uri}`. Returns `profileArn`
+    immediately. Refresh via desktop endpoint.
+47a. IdC uses device-code flow with standard AWS SSO-OIDC endpoints.
 48. Refresh via `POST {oidcEndpoint}/token` with
     `{clientId, clientSecret, refreshToken, grantType: "refresh_token"}`.
 49. Expiry buffer: 5 min subtracted from returned `expiresIn`.

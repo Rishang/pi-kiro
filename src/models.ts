@@ -452,6 +452,35 @@ export interface KiroApiModel {
 }
 
 /**
+ * Resolve the Kiro profile ARN by calling ListAvailableProfiles.
+ * Builder ID device-code login doesn't receive a profileArn, so we
+ * discover it here. Returns null on failure (graceful fallback).
+ */
+export async function resolveProfileArn(
+  accessToken: string,
+  apiRegion: string,
+): Promise<string | null> {
+  const resp = await fetch(`https://management.${apiRegion}.kiro.dev/`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/x-amz-json-1.0",
+      "X-Amz-Target": "AmazonCodeWhispererService.ListAvailableProfiles",
+      "User-Agent": "pi-kiro",
+    },
+    body: "{}",
+  });
+  if (!resp.ok) return null;
+
+  const data = (await resp.json()) as {
+    profiles?: { arn?: string; profileType?: string; status?: string }[];
+  };
+  const profiles = data.profiles ?? [];
+  const kiroProfile = profiles.find((p) => p.profileType === "KIRO" && p.status === "ACTIVE");
+  return kiroProfile?.arn ?? profiles[0]?.arn ?? null;
+}
+
+/**
  * Fetch the list of models actually available for this account from Kiro.
  * Filters out "auto" — it appears in ListAvailableModels but is rejected
  * by GenerateAssistantResponse with INVALID_MODEL_ID.

@@ -33,6 +33,7 @@ import {
   getCachedDynamicModels,
   kiroModels,
   resolveApiRegion,
+  resolveProfileArn,
   resolveRuntimeUrl,
   setCachedDynamicModels,
   type KiroModelDef,
@@ -196,16 +197,30 @@ function writeKiroCredentials(refreshed: KiroCredentials): void {
   }
 }
 
+/** Merge individual fields into the existing kiro entry (e.g. resolved profileArn). */
+function writeKiroCredentialsPartial(fields: Record<string, unknown>): void {
+  try {
+    const authPath = join(homedir(), ".pi", "agent", "auth.json");
+    const raw = existsSync(authPath) ? readFileSync(authPath, "utf-8") : "{}";
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    const existing = (data["kiro"] as Record<string, unknown> | undefined) ?? {};
+    data["kiro"] = { ...existing, ...fields };
+    writeFileSync(authPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+  } catch (err) {
+    log.warn(`Failed to persist partial credentials: ${err}`);
+  }
+}
+
 export default async function (pi: ExtensionAPI): Promise<void> {
   // Fetch available models from Kiro API. Fallback to hardcoded list if fetch fails or no credentials.
   // `kiroModels` (KiroModel[]) is structurally a superset of KiroModelDef, so
   // it's directly assignable to `toProviderModels` without a cast.
   let modelDefs = toProviderModels(kiroModels);
   const creds = readKiroCredentials();
-  if (creds?.profileArn) {
+  if (creds?.access || creds?.refresh) {
     let accessToken = creds.access;
 
-    // Always refresh at startup to guarantee a valid token for model fetch
+    // Always refresh at startup to guarantee a valid token
     if (creds.refresh) {
       try {
         log.info("Refreshing token at startup…");
@@ -217,16 +232,36 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       }
     }
 
-    try {
-      const apiRegion = resolveApiRegion(creds.region);
-      seedProfileArn(creds.profileArn);
-      const apiModels = await fetchAvailableModels(accessToken, apiRegion, creds.profileArn);
-      const dynamicDefs = buildModelsFromApi(apiModels);
-      setCachedDynamicModels(dynamicDefs);
-      modelDefs = toProviderModels(dynamicDefs);
-      log.info(`Loaded ${modelDefs.length} models dynamically from Kiro API`);
-    } catch (err) {
-      log.warn(`Failed to fetch models at startup, using hardcoded fallback: ${err}`);
+    // Resolve profileArn if missing (Builder ID device-code flow never receives one)
+    let profileArn = creds.profileArn;
+    if (!profileArn && accessToken) {
+      try {
+        const apiRegion = resolveApiRegion(creds.region);
+        log.info("profileArn missing, resolving via ListAvailableProfiles…");
+        profileArn = await resolveProfileArn(accessToken, apiRegion) ?? undefined;
+        if (profileArn) {
+          log.info(`Resolved profileArn: ${profileArn}`);
+          writeKiroCredentialsPartial({ profileArn });
+        } else {
+          log.warn("Could not resolve profileArn — model fetch and streaming will fail");
+        }
+      } catch (err) {
+        log.warn(`profileArn resolution failed: ${err}`);
+      }
+    }
+
+    if (profileArn) {
+      seedProfileArn(profileArn);
+      try {
+        const apiRegion = resolveApiRegion(creds.region);
+        const apiModels = await fetchAvailableModels(accessToken, apiRegion, profileArn);
+        const dynamicDefs = buildModelsFromApi(apiModels);
+        setCachedDynamicModels(dynamicDefs);
+        modelDefs = toProviderModels(dynamicDefs);
+        log.info(`Loaded ${modelDefs.length} models dynamically from Kiro API`);
+      } catch (err) {
+        log.warn(`Failed to fetch models at startup, using hardcoded fallback: ${err}`);
+      }
     }
   } else {
     log.warn(

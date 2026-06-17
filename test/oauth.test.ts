@@ -44,61 +44,80 @@ function makeCallbacks(
   };
 }
 
-describe("loginKiro — Builder ID", () => {
+// Builder ID device-code test removed — builder-id now uses social sign-in.
+// Device-code flow is only used for IdC. See "loginKiro — Builder ID (social sign-in)" below.
+
+describe("loginKiro — Builder ID (social sign-in)", () => {
   let fetchMock: FetchMock;
   let originalFetch: typeof fetch;
 
   beforeEach(() => {
     originalFetch = global.fetch;
-    fetchMock = vi.fn().mockImplementation((url: string) => {
-      if (typeof url === "string" && url.includes("ListAvailableModels")) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ models: [] }),
-        });
-      }
-      return undefined;
-    });
+    fetchMock = vi.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
   });
   afterEach(() => {
     global.fetch = originalFetch;
-    vi.useRealTimers();
   });
 
-  it("selects Builder ID → device-code flow at us-east-1", async () => {
-    vi.useFakeTimers();
-    fetchMock
-      .mockResolvedValueOnce(okJson({ clientId: "CID", clientSecret: "SEC" }))
-      .mockResolvedValueOnce(
-        okJson({
-          verificationUri: "https://verify",
-          verificationUriComplete: "https://verify?user_code=ABCD",
-          userCode: "ABCD",
-          deviceCode: "DEV",
-          interval: 1,
-          expiresIn: 60,
-        }),
-      )
-      .mockResolvedValueOnce(okJson({ accessToken: "AT", refreshToken: "RT", expiresIn: 3600 }));
+  it("selects Builder ID → social sign-in with PKCE, returns profileArn", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (typeof url === "string" && url.includes("/oauth/token")) {
+        return okJson({ accessToken: "AT", refreshToken: "RT", profileArn: "arn:xxx", expiresIn: 3600 });
+      }
+      if (typeof url === "string" && url.includes("ListAvailableModels")) {
+        return okJson({ models: [] });
+      }
+      return undefined;
+    });
 
-    const callbacks = makeCallbacks("builder-id");
-    const promise = loginKiro(callbacks);
-    await vi.runAllTimersAsync();
-    const creds = await promise;
+    const onAuth = vi.fn((info: OAuthAuthInfo) => {
+      const signInUrl = new URL(info.url);
+      const state = signInUrl.searchParams.get("state")!;
+      // Simulate Kiro's real redirect: adds /oauth/callback path and login_option
+      void originalFetch(
+        `http://localhost:49153/oauth/callback?code=AUTH_CODE&state=${state}&login_option=google`,
+      ).catch(() => {});
+    });
 
-    expect(creds.region).toBe("us-east-1");
+    const callbacks: OAuthLoginCallbacks = {
+      onAuth,
+      onDeviceCode: vi.fn(),
+      onSelect: vi.fn(async () => "builder-id"),
+      onPrompt: vi.fn(async () => ""),
+      onProgress: vi.fn(),
+    };
+
+    const creds = await loginKiro(callbacks);
+
+    expect(creds.authMethod).toBe("social");
     expect(creds.access).toBe("AT");
-    expect(creds.refresh).toBe("RT|CID|SEC|builder-id");
-    expect(creds.authMethod).toBe("builder-id");
+    expect(creds.profileArn).toBe("arn:xxx");
+    expect(creds.refresh).toBe("RT|||social");
+    expect(creds.region).toBe("us-east-1");
+    expect(creds.clientId).toBe("");
+    expect(creds.clientSecret).toBe("");
 
-    // Request 1: /client/register to us-east-1
-    const firstUrl = fetchMock.mock.calls[0]?.[0] as string;
-    expect(firstUrl).toContain("oidc.us-east-1.amazonaws.com/client/register");
+    // Verify sign-in URL structure
+    expect(onAuth).toHaveBeenCalledOnce();
+    const signInUrl = new URL(onAuth.mock.calls[0]![0].url);
+    expect(signInUrl.origin).toBe("https://app.kiro.dev");
+    expect(signInUrl.pathname).toBe("/signin");
+    expect(signInUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(signInUrl.searchParams.get("redirect_uri")).toBe("http://localhost:49153");
+    expect(signInUrl.searchParams.get("redirect_from")).toBe("kirocli");
+    expect(signInUrl.searchParams.get("code_challenge")).toBeTruthy();
+    expect(signInUrl.searchParams.get("state")).toBeTruthy();
 
-    // Request 2: /device_authorization carries the Builder ID start URL
-    const devBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
-    expect(devBody.startUrl).toBe("https://view.awsapps.com/start");
+    // Verify token exchange payload
+    const tokenCallIndex = fetchMock.mock.calls.findIndex(
+      (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("/oauth/token"),
+    );
+    expect(tokenCallIndex).toBeGreaterThanOrEqual(0);
+    const tokenBody = JSON.parse(fetchMock.mock.calls[tokenCallIndex]![1]?.body as string);
+    expect(tokenBody.code).toBe("AUTH_CODE");
+    expect(tokenBody.code_verifier).toBeTruthy();
+    expect(tokenBody.redirect_uri).toBe("http://localhost:49153/oauth/callback?login_option=google");
   });
 });
 
@@ -381,6 +400,26 @@ describe("refreshKiroToken", () => {
     } as any);
     expect(refreshed.authMethod).toBe("desktop");
     expect(refreshed.access).toBe("AT2");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("social authMethod uses the desktop endpoint and preserves authMethod", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okJson({ accessToken: "AT2", refreshToken: "RT2", expiresIn: 3600 }),
+    );
+    const refreshed = await refreshKiroToken({
+      refresh: "RT|||social",
+      access: "old",
+      expires: 0,
+      region: "us-east-1",
+      authMethod: "social",
+    } as any);
+    expect(refreshed.authMethod).toBe("social");
+    expect(refreshed.access).toBe("AT2");
+    expect(refreshed.refresh).toBe("RT2|||social");
     expect(fetchMock).toHaveBeenCalledWith(
       "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
       expect.objectContaining({ method: "POST" }),
