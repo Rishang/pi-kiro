@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6
+
+### Patch Changes
+
+- Fix duplicate browser tab during Enterprise sign-in and resolve profileArn immediately after successful login and token refresh.
+
 ## 0.4.5
 
 ### Patch Changes
