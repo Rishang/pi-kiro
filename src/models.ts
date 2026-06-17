@@ -470,7 +470,7 @@ export async function resolveProfileArn(
     },
     body: "{}",
   });
-  if (!resp.ok) return null;
+  if (!resp || !resp.ok) return null;
 
   const data = (await resp.json()) as {
     profiles?: { arn?: string; profileType?: string; status?: string }[];
@@ -509,7 +509,8 @@ export async function fetchAvailableModels(
     },
     body: JSON.stringify({ origin: "KIRO_CLI", profileArn }),
   });
-  if (!resp.ok) {
+  if (!resp || !resp.ok) {
+    if (!resp) throw new Error("ListAvailableModels failed: fetch returned no response");
     const body = await resp.text().catch(() => "");
     if (resp.status === 401 || (resp.status === 400 && body.includes("Invalid token"))) {
       throw new Error(`Authentication failed: 401 ListAvailableModels failed - ${body}`);
