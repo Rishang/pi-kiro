@@ -121,6 +121,8 @@ const smokeTools = [
   },
 ];
 
+type TestCase = { name: string; context: Context & { tools: typeof smokeTools } };
+
 const tests: TestCase[] = [
   {
     name: "1. Normal agentic loop (baseline — should always work)",
