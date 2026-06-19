@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.10
+
+### Patch Changes
+
+- Tool-call reliability fixes and stale-model cleanup.
+
+  - fix(stream): preserve tool parameter names during schema sanitization (replaces deepCleanSchema). Keys under `properties` are parameter names, not JSON Schema keywords, so they must not be filtered against the allowlist — the old behavior dropped every parameter while `required` still referenced them.
+  - fix(stream): stop leaking the internal `__tool_use_purpose` field in `toolcall_delta` — emit cleaned args so delta and toolcall_end agree.
+  - fix(stream): inject a placeholder toolConfig when replayed history contains toolUse/toolResult blocks but the current turn supplies no tools. Prevents Bedrock TOOL_CONFIG_MISSING 400 loops on auxiliary turns (title generation, summarization, compaction).
+  - fix(event-parser): don't treat metering frames (`{"unit":"credit","usage":<number>}`) as usage events, which clobbered real token counts.
+  - chore(models): drop stale static model ids (1M variants, deepseek-3.2, kimi-k2.5, glm-4.7/flash, qwen3-coder-480b, agi-nova-beta-1m) now resolved dynamically.
+  - test(debug): make log-level tests hermetic against ambient KIRO_LOG/KIRO_LOG_FILE env.
+
 ## 0.4.9
 
 ### Patch Changes
@@ -16,6 +29,7 @@
   with tool calls could be re-injected into the history.
 
 - refactor: define `TestCase` type in smoke-live test to fix `TS2304` compilation error
+
 ## 0.4.8
 
 ### Patch Changes
