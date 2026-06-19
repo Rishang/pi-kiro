@@ -446,6 +446,13 @@ describe("streamKiro", () => {
       );
       const events = await collect(streamKiro(hiddenModel(), makeContext(), { apiKey: "tok" }));
 
+      const deltaEvent = events.find((e) => e.type === "toolcall_delta");
+      expect(deltaEvent).toBeDefined();
+      if (deltaEvent?.type === "toolcall_delta") {
+        expect(deltaEvent.delta).not.toContain("__tool_use_purpose");
+        expect(JSON.parse(deltaEvent.delta)).toEqual({ cmd: "ls" });
+      }
+
       const done = events.find((e) => e.type === "done");
       expect(done?.type === "done").toBe(true);
       if (done?.type === "done") {

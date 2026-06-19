@@ -239,7 +239,7 @@ function emitToolCall(
   const toolCall: ToolCall = { type: "toolCall", id: state.toolUseId, name: state.name, arguments: args };
   output.content.push(toolCall);
   stream.push({ type: "toolcall_start", contentIndex, partial: output });
-  stream.push({ type: "toolcall_delta", contentIndex, delta: state.input, partial: output });
+  stream.push({ type: "toolcall_delta", contentIndex, delta: JSON.stringify(args), partial: output });
   stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
   return true;
 }
@@ -508,33 +508,46 @@ export function streamKiro(
         };
         if (currentToolResults.length > 0) uimc.toolResults = currentToolResults;
         if (context.tools?.length) {
-          // Bedrock / Amazon Q strict schema requirements:
-          // 1. No $schema
-          // 2. No empty required arrays
-          // Note: additionalProperties IS supported by Bedrock and MUST be
-          // preserved — it constrains the model to only use declared properties,
-          // preventing hallucinated fields and schema-mismatch errors on the host.
-          const deepCleanSchema = (obj: any): any => {
-            if (Array.isArray(obj)) {
-              return obj.map(deepCleanSchema);
-            } else if (obj !== null && typeof obj === "object") {
-              const cleaned: any = {};
-              for (const [k, v] of Object.entries(obj)) {
-                if (k === "$schema") continue;
-                if (k === "required" && Array.isArray(v) && v.length === 0) continue;
-                cleaned[k] = deepCleanSchema(v);
+          const ALLOWED_SCHEMA_KEYS = new Set([
+            "type", "properties", "required", "description", "enum",
+            "items", "default", "oneOf", "anyOf", "allOf",
+            "minimum", "maximum", "minLength", "maxLength",
+            "minItems", "maxItems", "pattern", "const", "title",
+            "additionalProperties",
+          ]);
+
+          const sanitizeSchema = (obj: unknown): unknown => {
+            if (obj === null || obj === undefined) return obj;
+            if (Array.isArray(obj)) return obj.map(sanitizeSchema);
+            if (typeof obj !== "object") return obj;
+
+            const result: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+              if (!ALLOWED_SCHEMA_KEYS.has(key) && key !== "__tool_use_purpose") continue;
+              if (key === "required" && Array.isArray(value) && value.length === 0) continue;
+              if ((key === "minimum" || key === "maximum") && typeof value === "number") {
+                if (Math.abs(value) > 1_000_000_000) continue;
               }
-              return cleaned;
+              // properties: las claves son nombres de parámetros, NO keywords — preservarlas
+              if (key === "properties" && value && typeof value === "object" && !Array.isArray(value)) {
+                const props: Record<string, unknown> = {};
+                for (const [name, sub] of Object.entries(value as Record<string, unknown>)) {
+                  props[name] = sanitizeSchema(sub);
+                }
+                result[key] = props;
+                continue;
+              }
+              result[key] = sanitizeSchema(value);
             }
-            return obj;
+            return result;
           };
 
           uimc.tools = context.tools.map((t) => {
-            const params = deepCleanSchema(t.parameters) as Record<string, any>;
+            const params = sanitizeSchema(t.parameters) as Record<string, unknown>;
             // Bedrock / Amazon Q often expects __tool_use_purpose in properties.
             // We'll inject it just in case it's a hard requirement, though it might not be.
-            if (params.properties) {
-              params.properties.__tool_use_purpose = {
+            if (params.properties && typeof params.properties === "object" && !Array.isArray(params.properties)) {
+              (params.properties as Record<string, unknown>).__tool_use_purpose = {
                 type: "string",
                 description: "A brief explanation why you are making this tool use.",
               };
@@ -543,7 +556,7 @@ export function streamKiro(
               toolSpecification: {
                 name: t.name,
                 description: t.description || `Use ${t.name}`,
-                inputSchema: { json: params },
+                inputSchema: { json: params as Record<string, unknown> },
               },
             };
           });
