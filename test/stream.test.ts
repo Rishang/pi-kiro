@@ -8,7 +8,18 @@ import type {
   UserMessage,
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HIDDEN_REASONING_COUNTDOWN_MS, resetProfileArnCache, seedProfileArn, getProfileArn, streamKiro } from "../src/stream";
+import {
+  HIDDEN_REASONING_COUNTDOWN_MS,
+  resetProfileArnCache,
+  seedProfileArn,
+  getProfileArn,
+  streamKiro,
+  firstTokenTimeoutForModel,
+  mapKiroStopReason,
+  resolveConversationId,
+} from "../src/stream";
+import { setCachedDynamicModels } from "../src/models";
+import type { KiroModelDef } from "../src/models";
 
 function makeModel(overrides?: Partial<Model<Api>>): Model<Api> {
   return {
@@ -1236,5 +1247,277 @@ describe("streamKiro", () => {
       const { errors } = validateBedrockInvariants(body);
       expect(errors).toEqual([]);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Regression tests for ported opencode-kiro audit fixes
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("firstTokenTimeoutForModel (consults dynamic models)", () => {
+  afterEach(() => setCachedDynamicModels(null));
+
+  it("falls back to the default for unknown models", () => {
+    expect(firstTokenTimeoutForModel("totally-unknown")).toBe(90_000);
+  });
+
+  it("uses a static model's firstTokenTimeout", () => {
+    expect(firstTokenTimeoutForModel("claude-opus-4-8")).toBe(180_000);
+  });
+
+  it("uses a dynamic-only model's firstTokenTimeout", () => {
+    setCachedDynamicModels([
+      {
+        id: "dyn-opus",
+        name: "Dyn",
+        reasoning: true,
+        input: ["text"],
+        contextWindow: 1,
+        maxTokens: 1,
+        firstTokenTimeout: 180_000,
+      } as KiroModelDef,
+    ]);
+    expect(firstTokenTimeoutForModel("dyn-opus")).toBe(180_000);
+  });
+});
+
+describe("mapKiroStopReason", () => {
+  it("maps the real wire values", () => {
+    expect(mapKiroStopReason("TOOL_USE")).toBe("toolUse");
+    expect(mapKiroStopReason("MAX_TOKENS")).toBe("length");
+    expect(mapKiroStopReason("END_TURN")).toBe("stop");
+    expect(mapKiroStopReason("STOP_SEQUENCE")).toBe("stop");
+  });
+  it("is case-insensitive and returns null for unknown/absent", () => {
+    expect(mapKiroStopReason("tool_use")).toBe("toolUse");
+    expect(mapKiroStopReason("WAT")).toBeNull();
+    expect(mapKiroStopReason(null)).toBeNull();
+    expect(mapKiroStopReason(undefined)).toBeNull();
+  });
+});
+
+describe("streamKiro ported fixes", () => {
+  beforeEach(() => {
+    resetProfileArnCache();
+    seedProfileArn("arn:aws:codewhisperer:us-east-1:000000000000:profile/test");
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setCachedDynamicModels(null);
+  });
+
+  it("preserves identical consecutive content chunks (no blind dedup)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchOk('{"content":"a"}{"content":"a"}{"content":"b"}{"contextUsagePercentage":5}'),
+    );
+    const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+    const done = events.find((e) => e.type === "done");
+    expect(done?.type).toBe("done");
+    if (done?.type === "done") {
+      const text = done.message.content.find((b) => b.type === "text");
+      expect(text?.type).toBe("text");
+      if (text?.type === "text") expect(text.text).toBe("aab"); // both "a" survive
+    }
+  });
+
+  it("a stream error after partial content does NOT retry and surfaces the error", async () => {
+    const fetchMock = mockFetchOk('{"content":"Hello"}{"error":"ThrottlingException","message":"rate"}');
+    vi.stubGlobal("fetch", fetchMock);
+
+    const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+
+    // No reset-and-retry once content was streamed → exactly one HTTP call.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const err = events.find((e) => e.type === "error");
+    expect(err?.type).toBe("error");
+    if (err?.type === "error") {
+      expect(err.error.errorMessage).toMatch(/after partial output/);
+      // Partial content is preserved, not discarded.
+      expect(err.error.content.some((b) => b.type === "text")).toBe(true);
+    }
+  });
+
+  it("a signature-only reasoning frame creates no empty thinking block", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchOk('{"signature":"sig-only"}{"content":"Hi"}{"contextUsagePercentage":5}'),
+    );
+    const events = await collect(
+      streamKiro(makeModel({ id: "claude-opus-4-8", reasoning: true }), makeContext(), {
+        apiKey: "tok",
+      }),
+    );
+    expect(events.filter((e) => e.type === "thinking_start")).toHaveLength(0);
+    const done = events.find((e) => e.type === "done");
+    if (done?.type === "done") {
+      expect(done.message.content.every((b) => b.type !== "thinking")).toBe(true);
+      const text = done.message.content.find((b) => b.type === "text");
+      if (text?.type === "text") expect(text.text).toBe("Hi");
+    }
+  });
+
+  it("forwards clamped max_tokens for thinking-config models", async () => {
+    const fetchMock = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":5}');
+    vi.stubGlobal("fetch", fetchMock);
+    await collect(
+      streamKiro(makeModel({ id: "claude-opus-4-8", maxTokens: 128000 }), makeContext(), {
+        apiKey: "tok",
+        maxTokens: 50000,
+      }),
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.additionalModelRequestFields?.max_tokens).toBe(50000);
+  });
+
+  it("clamps max_tokens to the model output window", async () => {
+    const fetchMock = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":5}');
+    vi.stubGlobal("fetch", fetchMock);
+    await collect(
+      streamKiro(makeModel({ id: "claude-opus-4-8", maxTokens: 64000 }), makeContext(), {
+        apiKey: "tok",
+        maxTokens: 999999,
+      }),
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.additionalModelRequestFields?.max_tokens).toBe(64000);
+  });
+
+  it("omits max_tokens for models without thinking config", async () => {
+    const fetchMock = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":5}');
+    vi.stubGlobal("fetch", fetchMock);
+    await collect(
+      streamKiro(makeModel({ id: "claude-sonnet-4-5" }), makeContext(), { apiKey: "tok", maxTokens: 50000 }),
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.additionalModelRequestFields?.max_tokens).toBeUndefined();
+  });
+});
+
+describe("metadataEvent stopReason (real wire format, authoritative)", () => {
+  beforeEach(() => {
+    resetProfileArnCache();
+    seedProfileArn("arn:aws:codewhisperer:us-east-1:000000000000:profile/test");
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setCachedDynamicModels(null);
+  });
+
+  it("prefers END_TURN over the no-contextUsage length heuristic", async () => {
+    // No contextUsage + no tools → the heuristic would say "length";
+    // the server's metadataEvent says END_TURN, which must win → "stop".
+    vi.stubGlobal("fetch", mockFetchOk('{"content":"Done"}{"stopReason":"END_TURN"}'));
+    const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+    const done = events.find((e) => e.type === "done");
+    expect(done?.type).toBe("done");
+    if (done?.type === "done") expect(done.reason).toBe("stop");
+  });
+
+  it("maps MAX_TOKENS to length even when contextUsage was received", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchOk('{"content":"Cut off"}{"contextUsagePercentage":5}{"stopReason":"MAX_TOKENS"}'),
+    );
+    const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+    const done = events.find((e) => e.type === "done");
+    if (done?.type === "done") expect(done.reason).toBe("length");
+  });
+
+  it("maps TOOL_USE to toolUse", async () => {
+    const tool = '{"name":"grep","toolUseId":"t1","stop":true}';
+    vi.stubGlobal(
+      "fetch",
+      mockFetchOk(`${tool}{"stopReason":"TOOL_USE"}{"contextUsagePercentage":5}`),
+    );
+    const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+    const done = events.find((e) => e.type === "done");
+    if (done?.type === "done") expect(done.reason).toBe("toolUse");
+  });
+
+  it("falls back to the heuristic when no metadataEvent arrives", async () => {
+    // Unchanged behavior: no contextUsage, no tools, no stopReason → length.
+    vi.stubGlobal("fetch", mockFetchOk('{"content":"Partial"}'));
+    const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
+    const done = events.find((e) => e.type === "done");
+    if (done?.type === "done") expect(done.reason).toBe("length");
+  });
+});
+
+describe("conversationId stability (one deterministic id per session)", () => {
+  const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const UUID_V5 = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  beforeEach(() => {
+    resetProfileArnCache();
+    seedProfileArn("arn:aws:codewhisperer:us-east-1:000000000000:profile/test");
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  // A fetch mock that yields a FRESH reader on every call so a single mock can
+  // back several streamKiro invocations.
+  function mockFetchOkRepeating(body: string) {
+    return vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        body: {
+          getReader: () => {
+            const chunks = [
+              { done: false, value: new TextEncoder().encode(body) },
+              { done: true, value: undefined },
+            ];
+            let i = 0;
+            return {
+              read: () => Promise.resolve(chunks[i++] ?? { done: true, value: undefined }),
+              cancel: () => Promise.resolve(undefined),
+            };
+          },
+        },
+      }),
+    );
+  }
+
+  it("resolveConversationId is a deterministic v5 UUID — same id for one sessionId across calls", () => {
+    const a = resolveConversationId("sess-1");
+    const b = resolveConversationId("sess-1");
+    expect(a).toBe(b);
+    expect(a).toMatch(UUID_V5);
+  });
+
+  it("resolveConversationId returns DIFFERENT ids for different sessions", () => {
+    expect(resolveConversationId("sess-1")).not.toBe(resolveConversationId("sess-2"));
+  });
+
+  it("resolveConversationId mints a fresh, random (v4) id when sessionId is undefined", () => {
+    const a = resolveConversationId(undefined);
+    const b = resolveConversationId(undefined);
+    expect(a).not.toBe(b);
+    expect(a).toMatch(UUID_V4);
+    expect(b).toMatch(UUID_V4);
+  });
+
+  it("reuses ONE conversationId across multiple turns of the same session", async () => {
+    const fetchMock = mockFetchOkRepeating('{"content":"Hi"}{"contextUsagePercentage":5}');
+    vi.stubGlobal("fetch", fetchMock);
+
+    await collect(streamKiro(makeModel(), makeContext("turn 1"), { apiKey: "tok", sessionId: "c-abc" }));
+    await collect(streamKiro(makeModel(), makeContext("turn 2"), { apiKey: "tok", sessionId: "c-abc" }));
+
+    const id0 = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string).conversationState.conversationId;
+    const id1 = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string).conversationState.conversationId;
+    expect(id0).toMatch(UUID_V5);
+    expect(id0).toBe(id1);
+  });
+
+  it("uses DIFFERENT conversationIds for different sessions", async () => {
+    const fetchMock = mockFetchOkRepeating('{"content":"Hi"}{"contextUsagePercentage":5}');
+    vi.stubGlobal("fetch", fetchMock);
+
+    await collect(streamKiro(makeModel(), makeContext("a"), { apiKey: "tok", sessionId: "c-aaa" }));
+    await collect(streamKiro(makeModel(), makeContext("b"), { apiKey: "tok", sessionId: "c-bbb" }));
+
+    const id0 = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string).conversationState.conversationId;
+    const id1 = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string).conversationState.conversationId;
+    expect(id0).not.toBe(id1);
   });
 });

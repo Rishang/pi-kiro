@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findJsonEnd, parseKiroEvent, parseKiroEvents } from "../src/event-parser";
+import { findJsonEnd, parseKiroEvent, parseKiroEvents, detectEventStreamException } from "../src/event-parser";
 
 describe("findJsonEnd", () => {
   it("finds matching close brace", () => {
@@ -107,6 +107,12 @@ describe("parseKiroEvent", () => {
   it("returns null for unknown shapes", () => {
     expect(parseKiroEvent({ random: "key" })).toBeNull();
   });
+  it("returns a metadata event for an authoritative stopReason frame", () => {
+    expect(parseKiroEvent({ stopReason: "TOOL_USE" })).toEqual({
+      type: "metadata",
+      data: { stopReason: "TOOL_USE" },
+    });
+  });
 });
 
 describe("parseKiroEvents", () => {
@@ -152,5 +158,81 @@ describe("parseKiroEvents", () => {
       data: { text: "Let me think", signature: "sig1" },
     });
     expect(events[1]).toEqual({ type: "content", data: "result" });
+  });
+});
+
+describe("AWS Event Stream exception framing (vnd.amazon.eventstream)", () => {
+  // Simulate the text-decoded bytes of an exception message: header name +
+  // value-type byte (0x07 = string) + 2-byte big-endian length + value, then
+  // the JSON payload (which carries only the message, never the type).
+  function header(name: string, value: string): string {
+    const len = value.length;
+    return `:${name}\x07${String.fromCharCode((len >> 8) & 0xff)}${String.fromCharCode(len & 0xff)}${value}`;
+  }
+  function exceptionFrame(type: string, message: string): string {
+    return (
+      "\x00\x00\x00\x2a\x00\x00\x00\x1f" + // junk prelude bytes (length/CRC)
+      header("message-type", "exception") +
+      header("exception-type", type) +
+      header("content-type", "application/json") +
+      `{"message":${JSON.stringify(message)}}`
+    );
+  }
+
+  it("detectEventStreamException pulls the type from the header and message from the payload", () => {
+    const exc = detectEventStreamException(exceptionFrame("ThrottlingException", "slow down"));
+    expect(exc).not.toBeNull();
+    expect(exc?.type).toBe("ThrottlingException");
+    expect(exc?.message).toBe("slow down");
+  });
+
+  it("surfaces an exception frame as an error event (payload has no `error` key)", () => {
+    const { events } = parseKiroEvents(exceptionFrame("InternalServerException", "boom"));
+    const err = events.find((e) => e.type === "error");
+    expect(err).toBeDefined();
+    if (err?.type === "error") {
+      expect(err.data.error).toBe("InternalServerException");
+      expect(err.data.message).toBe("boom");
+    }
+  });
+
+  it("still extracts content events that precede an exception frame", () => {
+    const buffer = '{"content":"partial answer"}' + exceptionFrame("ThrottlingException", "rate");
+    const { events } = parseKiroEvents(buffer);
+    expect(events.find((e) => e.type === "content")).toBeDefined();
+    const err = events.find((e) => e.type === "error");
+    expect(err?.type).toBe("error");
+    if (err?.type === "error") expect(err.data.error).toBe("ThrottlingException");
+  });
+
+  it("does NOT false-positive on normal content that mentions an exception", () => {
+    const { events } = parseKiroEvents(
+      '{"content":"wrap it in a try/catch for the Exception"}{"contextUsagePercentage":5}',
+    );
+    expect(events.find((e) => e.type === "error")).toBeUndefined();
+    expect(detectEventStreamException("just some text about an Exception class")).toBeNull();
+  });
+
+  it("does not double-emit when the payload already carries an `error` key", () => {
+    const { events } = parseKiroEvents('{"error":"ValidationException","message":"bad input"}');
+    expect(events.filter((e) => e.type === "error")).toHaveLength(1);
+  });
+});
+
+describe("metadataEvent stopReason extraction", () => {
+  it("emits a metadata event for a standalone metadataEvent frame", () => {
+    const { events } = parseKiroEvents(
+      ":event-type metadataEvent:content-type application/json:message-type event" +
+        '{"stopReason":"END_TURN"}',
+    );
+    const meta = events.find((e) => e.type === "metadata");
+    expect(meta).toBeDefined();
+    if (meta?.type === "metadata") expect(meta.data.stopReason).toBe("END_TURN");
+  });
+
+  it("does not emit a metadata event for a clean text stream (no stopReason)", () => {
+    const { events } = parseKiroEvents('{"content":"hi"}{"contextUsagePercentage":5}');
+    expect(events.find((e) => e.type === "metadata")).toBeUndefined();
+    expect(events.find((e) => e.type === "error")).toBeUndefined();
   });
 });

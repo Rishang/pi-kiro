@@ -208,16 +208,15 @@ export class ThinkingTagParser {
   private emitThinking(thinking: string): void {
     if (!thinking) return;
     if (this.thinkingBlockIndex === null) {
-      if (this.textBlockIndex !== null) {
-        // Thinking arrived after text; splice it before the text block so
-        // content order is thinking → text.
-        this.thinkingBlockIndex = this.textBlockIndex;
-        this.output.content.splice(this.thinkingBlockIndex, 0, { type: "thinking", thinking: "" });
-        this.textBlockIndex = this.textBlockIndex + 1;
-      } else {
-        this.thinkingBlockIndex = this.output.content.length;
-        this.output.content.push({ type: "thinking", thinking: "" });
-      }
+      // Always append the thinking block at the current end of content. Do NOT
+      // splice it ahead of an already-emitted text block: the text_start /
+      // text_delta events were sent with the old contentIndex and an SSE
+      // consumer can't be re-indexed, so splicing corrupts block ordering
+      // downstream. Appending keeps every already-emitted index valid. In the
+      // normal case (thinking before text) textBlockIndex is still null, so
+      // this naturally yields thinking → text ordering anyway.
+      this.thinkingBlockIndex = this.output.content.length;
+      this.output.content.push({ type: "thinking", thinking: "" });
       this.stream.push({
         type: "thinking_start",
         contentIndex: this.thinkingBlockIndex,

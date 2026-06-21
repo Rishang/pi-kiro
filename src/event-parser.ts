@@ -16,7 +16,8 @@ export type KiroStreamEvent =
   | { type: "reasoning"; data: { text: string; signature?: string } }
   | { type: "followupPrompt"; data: string }
   | { type: "usage"; data: { inputTokens?: number; outputTokens?: number } }
-  | { type: "error"; data: { error: string; message?: string } };
+  | { type: "error"; data: { error: string; message?: string } }
+  | { type: "metadata"; data: { stopReason?: string } };
 
 /** Find the matching `}` for the `{` at `start`. Returns -1 if incomplete. */
 export function findJsonEnd(text: string, start: number): number {
@@ -143,6 +144,13 @@ export function parseKiroEvent(parsed: Record<string, unknown>): KiroStreamEvent
     };
   }
 
+  // metadataEvent carries the authoritative stop reason from Kiro
+  // (real frame: {"stopReason":"TOOL_USE"|"END_TURN"|"MAX_TOKENS"}). Surface it
+  // so the stream layer can prefer it over heuristic classification.
+  if (typeof parsed.stopReason === "string") {
+    return { type: "metadata", data: { stopReason: parsed.stopReason } };
+  }
+
   return null;
 }
 
@@ -159,6 +167,7 @@ const EVENT_PATTERNS = [
   '{"input":',
   '{"stop":',
   '{"contextUsagePercentage":',
+  '{"stopReason":',
   '{"followupPrompt":',
   '{"usage":',
   '{"toolUseId":',
@@ -177,11 +186,50 @@ function findNextEventStart(buffer: string, from: number): number {
   return earliest;
 }
 
+/**
+ * AWS Event Stream (application/vnd.amazon.eventstream) frames an exception as
+ * a message whose type lives in the `:exception-type` header (with
+ * `:message-type: exception`); the JSON payload is typically just
+ * `{"message":"..."}` — the type is NOT in the payload. The heuristic JSON
+ * scanner below can't see header bytes, so detect the exception framing
+ * directly. Header name/value strings survive UTF-8 decoding even though the
+ * surrounding 1-byte value-type + 2-byte length bytes are control characters,
+ * so allow up to a few arbitrary bytes between the header name and its value.
+ */
+const EXCEPTION_TYPE_RE = /:exception-type[\s\S]{0,4}?([A-Za-z][A-Za-z0-9]*(?:Exception|Error|Fault))/;
+const MESSAGE_TYPE_EXCEPTION_RE = /:message-type[\s\S]{0,4}?exception\b/;
+
+export function detectEventStreamException(
+  buffer: string,
+): { type: string; message?: string } | null {
+  const typeMatch = buffer.match(EXCEPTION_TYPE_RE);
+  if (!typeMatch && !MESSAGE_TYPE_EXCEPTION_RE.test(buffer)) return null;
+  const type = typeMatch?.[1] ?? "ServiceException";
+
+  // The human-readable message is in the last {"message":...} payload, if the
+  // frame's payload arrived complete. The type alone is enough to surface it.
+  let message: string | undefined;
+  const msgIdx = buffer.lastIndexOf('{"message":');
+  if (msgIdx >= 0) {
+    const end = findJsonEnd(buffer, msgIdx);
+    if (end >= 0) {
+      try {
+        const parsed = JSON.parse(buffer.substring(msgIdx, end + 1)) as { message?: unknown };
+        if (typeof parsed.message === "string") message = parsed.message;
+      } catch {
+        // payload not yet complete — type alone still surfaces the error
+      }
+    }
+  }
+  return { type, message };
+}
+
 export function parseKiroEvents(
   buffer: string,
 ): { events: KiroStreamEvent[]; remaining: string } {
   const events: KiroStreamEvent[] = [];
   let pos = 0;
+  let remaining = "";
 
   while (pos < buffer.length) {
     const jsonStart = findNextEventStart(buffer, pos);
@@ -218,7 +266,8 @@ export function parseKiroEvents(
     const jsonEnd = findJsonEnd(buffer, jsonStart);
     if (jsonEnd < 0) {
       // Incomplete JSON at end of buffer — preserve for next call.
-      return { events, remaining: buffer.substring(jsonStart) };
+      remaining = buffer.substring(jsonStart);
+      break;
     }
 
     try {
@@ -247,5 +296,16 @@ export function parseKiroEvents(
     pos = jsonEnd + 1;
   }
 
-  return { events, remaining: "" };
+  // AWS Event Stream exception frame: the type is in the `:exception-type`
+  // header (invisible to the JSON scanner above, whose payload is just
+  // {"message":...}). Surface it as an error event so the stream layer fails /
+  // retries instead of treating the truncated stream as a clean finish. Guard
+  // against double-emitting when the payload already carried an `error` key.
+  const exception = detectEventStreamException(buffer);
+  if (exception && !events.some((e) => e.type === "error")) {
+    events.push({ type: "error", data: { error: exception.type, message: exception.message } });
+    remaining = ""; // exception is terminal; nothing useful left to buffer
+  }
+
+  return { events, remaining };
 }

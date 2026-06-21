@@ -80,17 +80,34 @@ describe("ThinkingTagParser", () => {
     }
   });
 
-  it("splices thinking before text when text arrives first", async () => {
+  it("appends thinking after already-emitted text (no index-corrupting splice)", async () => {
     const output = makeOutput();
     const stream = createAssistantMessageEventStream();
+    const pushed: AssistantMessageEvent[] = [];
+    const origPush = stream.push.bind(stream);
+    stream.push = (e: AssistantMessageEvent) => {
+      pushed.push(e);
+      return origPush(e);
+    };
     const parser = new ThinkingTagParser(output, stream);
     parser.processChunk("prefix text ");
+    const textStart = pushed.find((e) => e.type === "text_start");
+    expect(textStart && "contentIndex" in textStart ? textStart.contentIndex : -1).toBe(0);
+
     parser.processChunk("<thinking>late reasoning</thinking>");
-    parser.processChunk(" suffix");
     parser.finalize();
     await collect(stream);
-    expect(output.content[0]?.type).toBe("thinking");
-    expect(output.content[1]?.type).toBe("text");
+    // Text was emitted first at index 0; thinking is APPENDED at index 1 — the
+    // already-sent text_start/text_delta events keep their contentIndex 0, so
+    // splicing would corrupt downstream ordering. Appending keeps them valid.
+    expect(output.content[0]?.type).toBe("text");
+    expect(output.content[1]?.type).toBe("thinking");
+    const thinkingStart = pushed.find((e) => e.type === "thinking_start");
+    expect(thinkingStart && "contentIndex" in thinkingStart ? thinkingStart.contentIndex : -1).toBe(1);
+    // Every emitted text_delta still references index 0 (no splice corruption).
+    const textDeltas = pushed.filter((e) => e.type === "text_delta");
+    expect(textDeltas.length).toBeGreaterThan(0);
+    expect(textDeltas.every((e) => "contentIndex" in e && e.contentIndex === 0)).toBe(true);
   });
 
   it("handles plain text with no thinking tags", async () => {

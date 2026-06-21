@@ -186,6 +186,22 @@ export function toKiroToolUseId(id: string): string {
   return `tooluse_${digest}`;
 }
 
+/** Image formats Bedrock/Kiro accepts. */
+const KIRO_IMAGE_FORMATS = new Set(["png", "jpeg", "gif", "webp"]);
+
+/**
+ * Map a MIME type to a Kiro-accepted image `format`, or null if unsupported.
+ * Normalizes `image/jpg` → `jpeg` and strips structured-syntax suffixes /
+ * vendor prefixes so `image/svg+xml` is correctly rejected (null) instead of
+ * yielding a bogus `svg+xml` format that the API would refuse.
+ */
+export function normalizeImageFormat(mimeType: string): string | null {
+  const sub = (mimeType.split("/")[1] || "").toLowerCase().split(";")[0]!.trim();
+  const base = sub.replace(/\+.*$/, "").replace(/^vnd\./, "");
+  const canonical = base === "jpg" ? "jpeg" : base;
+  return KIRO_IMAGE_FORMATS.has(canonical) ? canonical : null;
+}
+
 /**
  * Convert images to Kiro wire format, enforcing API limits:
  * - Max {@link MAX_KIRO_IMAGES} images per call
@@ -210,8 +226,15 @@ export function convertImagesToKiro(
       omitted++;
       continue;
     }
+    const format = normalizeImageFormat(img.mimeType);
+    if (!format) {
+      // Unsupported subtype (e.g. image/svg+xml): can't relabel raw bytes as a
+      // raster format, so omit it rather than send an invalid `format`.
+      omitted++;
+      continue;
+    }
     valid.push({
-      format: img.mimeType.split("/")[1] || "png",
+      format,
       source: { bytes: img.data },
     });
   }

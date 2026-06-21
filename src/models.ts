@@ -203,7 +203,7 @@ export const kiroModels: KiroModel[] = [
   {
     ...KIRO_DEFAULTS,
     id: "claude-fable-5",
-    name: "Claude Fable 5",
+    name: "Claude Fable 5 (disabled)",
     reasoning: true,
     input: MULTIMODAL,
     contextWindow: 1_000_000,
@@ -274,7 +274,7 @@ export const kiroModels: KiroModel[] = [
     reasoning: true,
     input: MULTIMODAL,
     contextWindow: 200_000,
-    maxTokens: 65_536,
+    maxTokens: 64_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -283,7 +283,7 @@ export const kiroModels: KiroModel[] = [
     reasoning: true,
     input: MULTIMODAL,
     contextWindow: 200_000,
-    maxTokens: 65_536,
+    maxTokens: 64_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -292,7 +292,7 @@ export const kiroModels: KiroModel[] = [
     reasoning: false,
     input: MULTIMODAL,
     contextWindow: 200_000,
-    maxTokens: 65_536,
+    maxTokens: 64_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -327,8 +327,8 @@ export const kiroModels: KiroModel[] = [
     name: "Auto",
     reasoning: true,
     input: MULTIMODAL,
-    contextWindow: 200_000,
-    maxTokens: 65_536,
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
   },
 ];
 
@@ -363,7 +363,7 @@ export async function resolveProfileArn(
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/x-amz-json-1.0",
       "X-Amz-Target": "AmazonCodeWhispererService.ListAvailableProfiles",
-      "user-agent": "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.16551 os/macos lang/rust/1.92.0 md/appVersion-2.7.1 app/AmazonQ-For-CLI",
+      "user-agent": "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.16551 os/macos lang/rust/1.92.0 md/appVersion-2.8.1 app/AmazonQ-For-CLI",
     },
     body: "{}",
   });
@@ -395,7 +395,7 @@ export async function fetchAvailableModels(
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/x-amz-json-1.0",
       "X-Amz-Target": "AmazonCodeWhispererService.ListAvailableModels",
-      "user-agent": "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.16551 os/macos lang/rust/1.92.0 md/appVersion-2.7.1 app/AmazonQ-For-CLI",
+      "user-agent": "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.16551 os/macos lang/rust/1.92.0 md/appVersion-2.8.1 app/AmazonQ-For-CLI",
       "x-amz-user-agent": "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.16551 os/macos lang/rust/1.92.0 m/F app/AmazonQ-For-CLI",
       "x-amzn-codewhisperer-optout": "true",
       "amz-sdk-request": "attempt=1; max=3",
@@ -452,7 +452,12 @@ export interface KiroModelDef {
 
 /**
  * Build pi model definitions from the Kiro ListAvailableModels API response.
- * Adds any new model IDs dynamically to KIRO_MODEL_IDS so resolveKiroModel passes.
+ *
+ * BY DESIGN: this also mutates the module-level KIRO_MODEL_IDS set (adds each
+ * dynamic model id) so resolveKiroModel() accepts ids that only exist in the
+ * dynamic catalog. The side effect is intentional and required — without it,
+ * dynamically-discovered models would be rejected as "Unknown Kiro model ID"
+ * before the request is ever sent.
  */
 export function buildModelsFromApi(apiModels: KiroApiModel[]): KiroModelDef[] {
   return apiModels.map((m) => {

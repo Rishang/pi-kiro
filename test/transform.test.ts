@@ -13,6 +13,7 @@ import {
   type KiroHistoryEntry,
   MAX_KIRO_IMAGE_BYTES,
   MAX_KIRO_IMAGES,
+  normalizeImageFormat,
   normalizeMessages,
   sanitizeHistory,
   TOOL_RESULT_LIMIT,
@@ -101,16 +102,54 @@ describe("getContentText", () => {
   });
 });
 
+describe("normalizeImageFormat", () => {
+  it("maps common raster types", () => {
+    expect(normalizeImageFormat("image/png")).toBe("png");
+    expect(normalizeImageFormat("image/jpeg")).toBe("jpeg");
+    expect(normalizeImageFormat("image/jpg")).toBe("jpeg");
+    expect(normalizeImageFormat("image/gif")).toBe("gif");
+    expect(normalizeImageFormat("image/webp")).toBe("webp");
+  });
+
+  it("strips parameters and normalizes casing", () => {
+    expect(normalizeImageFormat("IMAGE/PNG")).toBe("png");
+    expect(normalizeImageFormat("image/jpeg; charset=binary")).toBe("jpeg");
+  });
+
+  it("rejects unsupported / structured-syntax subtypes (no bogus format)", () => {
+    expect(normalizeImageFormat("image/svg+xml")).toBeNull();
+    expect(normalizeImageFormat("image/vnd.microsoft.icon")).toBeNull();
+    expect(normalizeImageFormat("application/pdf")).toBeNull();
+    expect(normalizeImageFormat("image/")).toBeNull();
+    expect(normalizeImageFormat("weird")).toBeNull();
+  });
+});
+
 describe("convertImagesToKiro", () => {
   it("derives format from mime", () => {
     const { images, omitted } = convertImagesToKiro([{ mimeType: "image/png", data: "b64" }]);
     expect(images).toEqual([{ format: "png", source: { bytes: "b64" } }]);
     expect(omitted).toBe(0);
   });
-  it("falls back to png for malformed mime", () => {
+  it("omits images with an unsupported/malformed mime instead of mislabeling them png", () => {
     const { images, omitted } = convertImagesToKiro([{ mimeType: "weird", data: "b64" }]);
-    expect(images).toEqual([{ format: "png", source: { bytes: "b64" } }]);
-    expect(omitted).toBe(0);
+    expect(images).toEqual([]);
+    expect(omitted).toBe(1);
+  });
+
+  it("normalizes jpg → jpeg on the wire format", () => {
+    const { images } = convertImagesToKiro([{ mimeType: "image/jpg", data: "abcd" }]);
+    expect(images[0]?.format).toBe("jpeg");
+  });
+
+  it("omits unsupported structured-syntax subtypes (e.g. image/svg+xml)", () => {
+    const { images, omitted } = convertImagesToKiro([
+      { mimeType: "image/svg+xml", data: "PHN2Zz48L3N2Zz4=" },
+      { mimeType: "image/png", data: "iVBORw0KGgo=" },
+    ]);
+    expect(omitted).toBe(1);
+    expect(images).toHaveLength(1);
+    expect(images[0]?.format).toBe("png");
   });
 
   it("omits images exceeding MAX_KIRO_IMAGE_BYTES", () => {

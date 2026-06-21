@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.11
+
+### Patch Changes
+
+- Port stream-reliability fixes from opencode-kiro's audit pass:
+
+  - **event-parser**: surface AWS Event Stream exception frames (type lives in the `:exception-type` header, not the JSON payload) as `error` events instead of treating a truncated stream as a clean finish; emit a `metadata` event carrying Kiro's authoritative `stopReason`.
+  - **stream**: prefer Kiro's `metadataEvent` stopReason over heuristics; deterministic per-session `conversationId` (v5 UUID, stable across process restarts) matching the Kiro CLI; forward clamped `max_tokens` for thinking-config models; stop blindly deduping identical content frames (preserves repeated `\n\n` / tokens); skip signature-only reasoning frames that would emit an empty thinking block; never reset-and-retry after partial output reached the consumer (avoids duplicated deltas); resolve `firstTokenTimeout` from dynamic models; UA bump to appVersion 2.8.1.
+  - **transform**: normalize image MIME → Kiro format (`jpg`→`jpeg`), omit unsupported subtypes (e.g. `image/svg+xml`) instead of sending a bogus `format`.
+  - **thinking-parser**: append late thinking blocks instead of splicing (splice corrupted already-emitted content indices downstream).
+  - **models**: `max_tokens` normalized to 64000; Fable 5 marked disabled; Auto context window to 1M; UA bump to 2.8.1.
+
 ## 0.4.10
 
 ### Patch Changes
