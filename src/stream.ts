@@ -93,16 +93,19 @@ function isTransientError(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-export function firstTokenTimeoutForModel(modelId: string): number {
-  const m =
+function findModel(modelId: string): { firstTokenTimeout?: number; idleTimeout?: number } | undefined {
+  return (
     (kiroModels.find((x) => x.id === modelId) as KiroModel | undefined) ??
-    getCachedDynamicModels()?.find((x) => x.id === modelId);
-  return m?.firstTokenTimeout ?? FIRST_TOKEN_TIMEOUT_DEFAULT_MS;
+    getCachedDynamicModels()?.find((x) => x.id === modelId)
+  );
+}
+
+export function firstTokenTimeoutForModel(modelId: string): number {
+  return findModel(modelId)?.firstTokenTimeout ?? FIRST_TOKEN_TIMEOUT_DEFAULT_MS;
 }
 
 function idleTimeoutForModel(modelId: string): number {
-  const m = kiroModels.find((x) => x.id === modelId) as KiroModel | undefined;
-  return m?.idleTimeout ?? IDLE_TIMEOUT_MS;
+  return findModel(modelId)?.idleTimeout ?? IDLE_TIMEOUT_MS;
 }
 
 /**
@@ -745,7 +748,7 @@ export function streamKiro(
         let contextTruncationAttempt = 0;
         while (true) {
           const osName = resolveOS();
-          const ua = `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.16551 os/${osName} lang/rust/1.92.0 md/appVersion-2.8.1 app/AmazonQ-For-CLI`;
+          const ua = `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.16551 os/${osName} lang/rust/1.92.0 md/appVersion-2.9.0 app/AmazonQ-For-CLI`;
           const xAmzUa = `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.16551 os/${osName} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI`;
           const requestBody = JSON.stringify(request);
 

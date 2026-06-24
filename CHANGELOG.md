@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.12
+
+### Patch Changes
+
+- fix: resolve idle timeout from dynamic models + UA bump
+
+  - fix(stream): `idleTimeoutForModel()` now consults the dynamic model cache
+    (same as `firstTokenTimeoutForModel`). Previously only the static
+    `kiroModels` catalog was checked, so dynamically loaded models fell back
+    to the 60s default — reintroducing idle-timeout failures for high-effort
+    reasoning models (Opus, Fable) once credentials existed and models were
+    fetched from the API. Completes [#4](https://github.com/javargasm/pi-kiro/pull/4) — Thanks [@VXNCXNX](https://github.com/VXNCXNX)!
+  - chore: bump user-agent `appVersion` from 2.8.1 → 2.9.0 in
+    `resolveProfileArn` and `fetchAvailableModels` (models.ts), aligning
+    with the stream.ts UA already bumped in 0.4.11.
+
 ## 0.4.11
 
 ### Patch Changes
