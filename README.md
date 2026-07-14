@@ -34,8 +34,15 @@ All Claude models available through the Kiro service, including:
 - `claude-fable-5`
 - `claude-opus-4-8`
 - `claude-opus-4-7`
+- `claude-sonnet-5`
 - `claude-sonnet-4-6`
 - `claude-sonnet-4-5`
+- `gpt-5-6-sol`
+- `gpt-5-6-terra`
+- `gpt-5-6-luna`
+- `glm-5`
+- `deepseek-3-2`
+- `qwen3-coder-next`
 
 Run `pi --list-models` for the full list once the extension is loaded.
 
