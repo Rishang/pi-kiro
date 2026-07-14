@@ -91,10 +91,8 @@ interface ProviderConfig {
 
 interface ExtensionAPI {
   registerProvider(name: string, config: ProviderConfig): void;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  on(event: string, handler: (event: any, ctx: any) => void | Promise<void>): void;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  setModel(model: any): Promise<boolean>;
+  on(event: string, handler: (event: unknown, ctx: unknown) => void | Promise<void>): void;
+  setModel(model: unknown): Promise<boolean>;
 }
 
 const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -241,8 +239,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   }
 
   // --- session_start: apply chat.defaultModel from ~/.kiro/settings/cli.json ---
-  pi.on("session_start", async (_event: unknown, ctx: { modelRegistry: { find(provider: string, id: string): unknown }; model?: { id: string } }) => {
+  pi.on("session_start", async (_event: unknown, _ctx: unknown) => {
     try {
+      const ctx = _ctx as { modelRegistry: { find(provider: string, id: string): unknown }; model?: { id: string } };
       const kiroCliSettingsPath = join(homedir(), ".kiro", "settings", "cli.json");
       if (!existsSync(kiroCliSettingsPath)) return;
       const kiroSettings = JSON.parse(readFileSync(kiroCliSettingsPath, "utf-8")) as Record<string, string>;
