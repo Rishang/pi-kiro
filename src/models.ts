@@ -11,6 +11,7 @@ export const KIRO_MODEL_IDS = new Set<string>([
   "claude-opus-4.8",
   "claude-opus-4.7",
   "claude-opus-4.6",
+  "claude-sonnet-5",
   "claude-sonnet-4.6",
   "claude-opus-4.5",
   "claude-sonnet-4.5",
@@ -18,7 +19,12 @@ export const KIRO_MODEL_IDS = new Set<string>([
   "claude-haiku-4.5",
   "minimax-m2.1",
   "minimax-m2.5",
+  "glm-5",
+  "deepseek-3.2",
   "qwen3-coder-next",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
   "auto",
 ]);
 
@@ -85,6 +91,7 @@ const MODELS_BY_REGION: Record<string, Set<string>> = {
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-5",
     "claude-sonnet-4-5",
@@ -92,7 +99,12 @@ const MODELS_BY_REGION: Record<string, Set<string>> = {
     "claude-haiku-4-5",
     "minimax-m2-1",
     "minimax-m2-5",
+    "glm-5",
+    "deepseek-3-2",
     "qwen3-coder-next",
+    "gpt-5-6-sol",
+    "gpt-5-6-terra",
+    "gpt-5-6-luna",
     "auto",
   ]),
   "eu-central-1": new Set([
@@ -100,6 +112,7 @@ const MODELS_BY_REGION: Record<string, Set<string>> = {
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-5",
     "claude-sonnet-4-5",
@@ -107,7 +120,11 @@ const MODELS_BY_REGION: Record<string, Set<string>> = {
     "claude-haiku-4-5",
     "minimax-m2-1",
     "minimax-m2-5",
+    "glm-5",
     "qwen3-coder-next",
+    "gpt-5-6-sol",
+    "gpt-5-6-terra",
+    "gpt-5-6-luna",
     "auto",
   ]),
 };
@@ -301,6 +318,19 @@ export const kiroModels: KiroModel[] = [
   },
   {
     ...KIRO_DEFAULTS,
+    id: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    reasoning: true,
+    input: MULTIMODAL,
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+    firstTokenTimeout: 90_000,
+    idleTimeout: 60_000,
+    supportedEfforts: ["low", "medium", "high", "max"],
+    supportsThinkingConfig: true,
+  },
+  {
+    ...KIRO_DEFAULTS,
     id: "minimax-m2-5",
     name: "MiniMax M2.5",
     reasoning: false,
@@ -319,12 +349,63 @@ export const kiroModels: KiroModel[] = [
   },
   {
     ...KIRO_DEFAULTS,
+    id: "glm-5",
+    name: "GLM-5",
+    reasoning: true,
+    input: TEXT_ONLY,
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  },
+  {
+    ...KIRO_DEFAULTS,
+    id: "deepseek-3-2",
+    name: "DeepSeek 3.2",
+    reasoning: true,
+    input: TEXT_ONLY,
+    contextWindow: 128_000,
+    maxTokens: 64_000,
+  },
+  {
+    ...KIRO_DEFAULTS,
     id: "qwen3-coder-next",
     name: "Qwen3 Coder Next",
     reasoning: true,
     input: MULTIMODAL,
     contextWindow: 256_000,
     maxTokens: 64_000,
+  },
+  {
+    ...KIRO_DEFAULTS,
+    id: "gpt-5-6-sol",
+    name: "GPT-5.6 Sol",
+    reasoning: true,
+    input: MULTIMODAL,
+    contextWindow: 272_000,
+    maxTokens: 64_000,
+    firstTokenTimeout: 90_000,
+    idleTimeout: 60_000,
+  },
+  {
+    ...KIRO_DEFAULTS,
+    id: "gpt-5-6-terra",
+    name: "GPT-5.6 Terra",
+    reasoning: true,
+    input: MULTIMODAL,
+    contextWindow: 272_000,
+    maxTokens: 64_000,
+    firstTokenTimeout: 90_000,
+    idleTimeout: 60_000,
+  },
+  {
+    ...KIRO_DEFAULTS,
+    id: "gpt-5-6-luna",
+    name: "GPT-5.6 Luna",
+    reasoning: true,
+    input: MULTIMODAL,
+    contextWindow: 272_000,
+    maxTokens: 64_000,
+    firstTokenTimeout: 90_000,
+    idleTimeout: 60_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -426,7 +507,7 @@ export async function fetchAvailableModels(
 /** Model families known to support reasoning/thinking. */
 const REASONING_FAMILIES = new Set([
   "claude-fable", "claude-sonnet", "claude-opus",
-  "deepseek", "kimi", "glm", "qwen", "agi-nova", "minimax"
+  "deepseek", "kimi", "glm", "qwen", "agi-nova", "minimax", "gpt",
 ]);
 
 function isReasoningModel(dotId: string): boolean {
@@ -510,4 +591,41 @@ export function getCachedDynamicModels(): KiroModelDef[] | null {
 
 export function setCachedDynamicModels(models: KiroModelDef[] | null): void {
   cachedDynamicModels = models;
+}
+
+// ---- Disk model cache -------------------------------------------------
+
+import { existsSync as existsSyncCache, readFileSync as readFileSyncCache, writeFileSync as writeFileSyncCache } from "node:fs";
+import { homedir as homedirCache } from "node:os";
+import { join as joinCache } from "node:path";
+
+const MODEL_DISK_CACHE_PATH = joinCache(homedirCache(), ".pi", "agent", "kiro-models-cache.json");
+const MODEL_DISK_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/** Read models from disk cache. Returns null if missing, corrupt, or expired. */
+export function readModelDiskCache(): KiroModelDef[] | null {
+  try {
+    if (!existsSyncCache(MODEL_DISK_CACHE_PATH)) return null;
+    const raw = readFileSyncCache(MODEL_DISK_CACHE_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as { ts?: number; models?: KiroModelDef[] };
+    if (!parsed || !Array.isArray(parsed.models) || typeof parsed.ts !== "number") return null;
+    if (Date.now() - parsed.ts > MODEL_DISK_CACHE_TTL_MS) return null;
+    return parsed.models;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist models to disk cache with a timestamp. */
+export function writeModelDiskCache(models: KiroModelDef[]): void {
+  try {
+    writeFileSyncCache(
+      MODEL_DISK_CACHE_PATH,
+      JSON.stringify({ ts: Date.now(), models }),
+      { mode: 0o600 },
+    );
+  } catch (err) {
+    // Non-fatal — cache write failure degrades gracefully
+    console.warn(`[pi-kiro] Failed to write model disk cache: ${err}`);
+  }
 }
