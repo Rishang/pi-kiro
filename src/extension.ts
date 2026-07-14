@@ -28,14 +28,17 @@ import type {
 } from "@earendil-works/pi-ai";
 import {
   buildModelsFromApi,
+  dotToDash,
   fetchAvailableModels,
   filterModelsByRegion,
   getCachedDynamicModels,
   kiroModels,
+  readModelDiskCache,
   resolveApiRegion,
   resolveProfileArn,
   resolveRuntimeUrl,
   setCachedDynamicModels,
+  writeModelDiskCache,
   type KiroModelDef,
 } from "./models";
 import { loginKiro, refreshKiroToken, type KiroCredentials } from "./oauth";
@@ -88,6 +91,10 @@ interface ProviderConfig {
 
 interface ExtensionAPI {
   registerProvider(name: string, config: ProviderConfig): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on(event: string, handler: (event: any, ctx: any) => void | Promise<void>): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setModel(model: any): Promise<boolean>;
 }
 
 const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -214,63 +221,48 @@ function writeKiroCredentialsPartial(fields: Record<string, unknown>): void {
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {
-  // Fetch available models from Kiro API. Fallback to hardcoded list if fetch fails or no credentials.
-  // `kiroModels` (KiroModel[]) is structurally a superset of KiroModelDef, so
-  // it's directly assignable to `toProviderModels` without a cast.
+  // --- Fast path: load disk-cached models immediately, no network ---
+  // `kiroModels` (KiroModel[]) is structurally a superset of KiroModelDef.
   let modelDefs = toProviderModels(kiroModels);
-  const creds = readKiroCredentials();
-  if (creds?.access || creds?.refresh) {
-    let accessToken = creds.access;
-
-    // Always refresh at startup to guarantee a valid token
-    if (creds.refresh) {
-      try {
-        log.info("Refreshing token at startup…");
-        const refreshed = await refreshKiroToken(creds);
-        accessToken = refreshed.access;
-        writeKiroCredentials(refreshed);
-      } catch (err) {
-        log.warn(`Startup token refresh failed, trying with existing token: ${err}`);
-      }
-    }
-
-    // Resolve profileArn if missing (Builder ID device-code flow never receives one)
-    let profileArn = creds.profileArn;
-    if (!profileArn && accessToken) {
-      try {
-        const apiRegion = resolveApiRegion(creds.region);
-        log.info("profileArn missing, resolving via ListAvailableProfiles…");
-        profileArn = await resolveProfileArn(accessToken, apiRegion) ?? undefined;
-        if (profileArn) {
-          log.info(`Resolved profileArn: ${profileArn}`);
-          writeKiroCredentialsPartial({ profileArn });
-        } else {
-          log.warn("Could not resolve profileArn — model fetch and streaming will fail");
-        }
-      } catch (err) {
-        log.warn(`profileArn resolution failed: ${err}`);
-      }
-    }
-
-    if (profileArn) {
-      seedProfileArn(profileArn);
-      try {
-        const apiRegion = resolveApiRegion(creds.region);
-        const apiModels = await fetchAvailableModels(accessToken, apiRegion, profileArn);
-        const dynamicDefs = buildModelsFromApi(apiModels);
-        setCachedDynamicModels(dynamicDefs);
-        modelDefs = toProviderModels(dynamicDefs);
-        log.info(`Loaded ${modelDefs.length} models dynamically from Kiro API`);
-      } catch (err) {
-        log.warn(`Failed to fetch models at startup, using hardcoded fallback: ${err}`);
-      }
-    }
-  } else {
-    log.warn(
-      "Run 'kiro login' to authenticate and fetch models dynamically. Note: This extension does not have the same authentication mechanism as other Kiro tools.",
-    );
+  const diskCached = readModelDiskCache();
+  if (diskCached && diskCached.length > 0) {
+    setCachedDynamicModels(diskCached);
+    modelDefs = toProviderModels(diskCached);
+    log.info(`Loaded ${modelDefs.length} models from disk cache (fast path)`);
   }
 
+  // Seed profileArn synchronously from stored credentials so streamKiro
+  // never throws "profileArn not resolved" before the background refresh
+  // completes. The background still resolves it via network if it's missing.
+  const credsEager = readKiroCredentials();
+  if (credsEager?.profileArn) {
+    seedProfileArn(credsEager.profileArn);
+    log.info(`Seeded profileArn from stored credentials: ${credsEager.profileArn}`);
+  }
+
+  // --- session_start: apply chat.defaultModel from ~/.kiro/settings/cli.json ---
+  pi.on("session_start", async (_event: unknown, ctx: { modelRegistry: { find(provider: string, id: string): unknown }; model?: { id: string } }) => {
+    try {
+      const kiroCliSettingsPath = join(homedir(), ".kiro", "settings", "cli.json");
+      if (!existsSync(kiroCliSettingsPath)) return;
+      const kiroSettings = JSON.parse(readFileSync(kiroCliSettingsPath, "utf-8")) as Record<string, string>;
+      const dotModelId = kiroSettings["chat.defaultModel"]?.trim();
+      if (!dotModelId) return;
+      // Kiro CLI uses dot notation (claude-sonnet-4.6), pi uses dash (claude-sonnet-4-6)
+      const dashModelId = dotToDash(dotModelId);
+      const model = ctx.modelRegistry.find("kiro", dashModelId);
+      if (model) {
+        await pi.setModel(model);
+        log.info(`session_start: applied kiro default model: ${dashModelId}`);
+      } else {
+        log.warn(`session_start: kiro default model "${dashModelId}" not in registry`);
+      }
+    } catch (err) {
+      log.warn(`session_start: failed to apply kiro default model: ${err}`);
+    }
+  });
+
+  // Register provider immediately — no awaiting network
   pi.registerProvider("kiro", {
     baseUrl: "https://runtime.us-east-1.kiro.dev",
     api: "kiro-api",
@@ -312,4 +304,70 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     },
     streamSimple: streamKiro,
   });
+
+  // --- Background refresh: token + models, non-blocking ---
+  Promise.resolve().then(async () => {
+    const creds = readKiroCredentials();
+    if (!creds?.access && !creds?.refresh) {
+      log.warn(
+        "Run 'kiro login' to authenticate and fetch models dynamically. Note: This extension does not have the same authentication mechanism as other Kiro tools.",
+      );
+      return;
+    }
+
+    // Skip token refresh if not expired (with 5-min buffer)
+    let accessToken = creds.access;
+    const REFRESH_BUFFER_MS = 5 * 60 * 1000;
+    const needsRefresh =
+      creds.refresh && (!creds.expires || creds.expires - Date.now() < REFRESH_BUFFER_MS);
+    if (needsRefresh) {
+      try {
+        log.info("Background: refreshing token…");
+        const refreshed = await refreshKiroToken(creds);
+        accessToken = refreshed.access;
+        writeKiroCredentials(refreshed);
+      } catch (err) {
+        log.warn(`Background token refresh failed, using existing token: ${err}`);
+      }
+    }
+
+    // Resolve profileArn if missing
+    let profileArn = creds.profileArn;
+    if (!profileArn && accessToken) {
+      try {
+        const apiRegion = resolveApiRegion(creds.region);
+        log.info("Background: resolving profileArn…");
+        profileArn = (await resolveProfileArn(accessToken, apiRegion)) ?? undefined;
+        if (profileArn) {
+          writeKiroCredentialsPartial({ profileArn });
+        } else {
+          log.warn("Background: could not resolve profileArn — model fetch skipped");
+          return;
+        }
+      } catch (err) {
+        log.warn(`Background: profileArn resolution failed: ${err}`);
+        return;
+      }
+    }
+
+    if (profileArn) {
+      seedProfileArn(profileArn);
+      // Skip model fetch if disk cache is still fresh
+      if (diskCached && diskCached.length > 0) {
+        log.info("Background: disk cache still fresh, skipping model fetch");
+        return;
+      }
+      try {
+        const apiRegion = resolveApiRegion(creds.region);
+        log.info("Background: fetching models from Kiro API…");
+        const apiModels = await fetchAvailableModels(accessToken, apiRegion, profileArn);
+        const dynamicDefs = buildModelsFromApi(apiModels);
+        setCachedDynamicModels(dynamicDefs);
+        writeModelDiskCache(dynamicDefs);
+        log.info(`Background: cached ${dynamicDefs.length} models to disk`);
+      } catch (err) {
+        log.warn(`Background: model fetch failed: ${err}`);
+      }
+    }
+  }).catch((err: unknown) => log.warn(`Background refresh error: ${err}`));
 }
