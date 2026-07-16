@@ -8,6 +8,13 @@ import type {
   UserMessage,
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../src/kiro-cli-sync", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/kiro-cli-sync")>()),
+  importFromKiroCli: vi.fn(),
+}));
+
+import { importFromKiroCli } from "../src/kiro-cli-sync";
 import {
   HIDDEN_REASONING_COUNTDOWN_MS,
   resetProfileArnCache,
@@ -119,6 +126,8 @@ function mockFetchOk(body: string) {
 
 describe("streamKiro", () => {
   beforeEach(() => {
+    vi.mocked(importFromKiroCli).mockReset();
+    vi.mocked(importFromKiroCli).mockResolvedValue(null);
     resetProfileArnCache();
     // Seed a test profileArn for the default model endpoint so the
     // required-profileArn guard in streamKiro doesn't short-circuit.
@@ -173,6 +182,109 @@ describe("streamKiro", () => {
     expect(opts.headers["amz-sdk-request"]).toBe("attempt=1; max=3");
     expect(opts.headers.Pragma).toBe("no-cache");
     expect(opts.headers["Cache-Control"]).toBe("no-cache");
+  });
+
+  it.each([401, 403])(
+    "resyncs a changed Kiro CLI token and retries once after HTTP %i",
+    async (status) => {
+      vi.mocked(importFromKiroCli).mockResolvedValue({
+        accessToken: "fresh-token",
+        refreshToken: "refresh-token",
+        region: "us-east-1",
+        authMethod: "idc",
+      });
+      const success = {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: vi
+              .fn()
+              .mockResolvedValueOnce({
+                done: false,
+                value: new TextEncoder().encode('{"content":"Recovered"}{"contextUsagePercentage":5}'),
+              })
+              .mockResolvedValueOnce({ done: true, value: undefined }),
+            cancel: vi.fn().mockResolvedValue(undefined),
+          }),
+        },
+      };
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status,
+          statusText: "Rejected",
+          text: () => Promise.resolve("invalid bearer token"),
+        })
+        .mockResolvedValueOnce(success);
+      vi.stubGlobal("fetch", fetchMock);
+
+      const events = await collect(
+        streamKiro(makeModel(), makeContext(), { apiKey: "stale-token" }),
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(importFromKiroCli)).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0]?.[1]?.headers.Authorization).toBe("Bearer stale-token");
+      expect(fetchMock.mock.calls[1]?.[1]?.headers.Authorization).toBe("Bearer fresh-token");
+      expect(events.some((event) => event.type === "done")).toBe(true);
+    },
+  );
+
+  it("does not retry when the Kiro CLI DB has the same access token", async () => {
+    vi.mocked(importFromKiroCli).mockResolvedValue({
+      accessToken: "unchanged-token",
+      refreshToken: "refresh-token",
+      region: "us-east-1",
+      authMethod: "idc",
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: () => Promise.resolve("invalid bearer token"),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const events = await collect(
+      streamKiro(makeModel(), makeContext(), { apiKey: "unchanged-token" }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(vi.mocked(importFromKiroCli)).toHaveBeenCalledOnce();
+    const error = events.find((event) => event.type === "error");
+    expect(error?.type).toBe("error");
+    if (error?.type === "error") {
+      expect(error.error.errorMessage).toContain("401 Unauthorized");
+    }
+  });
+
+  it("does not resync more than once when the retry also receives a 403", async () => {
+    vi.mocked(importFromKiroCli).mockResolvedValue({
+      accessToken: "fresh-token",
+      refreshToken: "refresh-token",
+      region: "us-east-1",
+      authMethod: "idc",
+    });
+    const rejected = {
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      text: () => Promise.resolve("invalid bearer token"),
+    };
+    const fetchMock = vi.fn().mockResolvedValue(rejected);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const events = await collect(
+      streamKiro(makeModel(), makeContext(), { apiKey: "stale-token" }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(importFromKiroCli)).toHaveBeenCalledOnce();
+    const error = events.find((event) => event.type === "error");
+    expect(error?.type).toBe("error");
+    if (error?.type === "error") {
+      expect(error.error.errorMessage).toContain("run /login kiro");
+    }
   });
 
   it("canonicalizes current-turn tool IDs before sending to Kiro", async () => {

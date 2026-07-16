@@ -18,6 +18,7 @@ import type {
 import { calculateCost, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { log, previewChunk } from "./debug";
 import { parseKiroEvents } from "./event-parser";
+import { importFromKiroCli } from "./kiro-cli-sync";
 import { isPermanentError } from "./health";
 import type { KiroModel } from "./models";
 import { createHash } from "node:crypto";
@@ -351,7 +352,7 @@ export function streamKiro(
     let hiddenShimTimer: ReturnType<typeof setTimeout> | null = null;
 
     try {
-      const accessToken = options?.apiKey;
+      let accessToken = options?.apiKey;
       if (!accessToken) {
         throw new Error("Kiro credentials not set. Run /login kiro.");
       }
@@ -746,6 +747,7 @@ export function streamKiro(
         let capacityRetryCount = 0;
         let transientRetryCount = 0;
         let contextTruncationAttempt = 0;
+        let credentialResyncAttempted = false;
         while (true) {
           const osName = resolveOS();
           const ua = `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.16551 os/${osName} lang/rust/1.92.0 md/appVersion-2.9.0 app/AmazonQ-For-CLI`;
@@ -794,6 +796,25 @@ export function streamKiro(
             status: response.status,
             body: errText,
           });
+
+          if ((response.status === 401 || response.status === 403) && !credentialResyncAttempted) {
+            credentialResyncAttempted = true;
+            try {
+              log.info(
+                `authentication rejected (${response.status}) — resyncing Kiro CLI credentials and retrying once`,
+              );
+              const imported = await importFromKiroCli();
+              if (imported?.accessToken && imported.accessToken !== accessToken) {
+                accessToken = imported.accessToken;
+                if (imported.profileArn) seedProfileArn(imported.profileArn);
+                log.info("Kiro CLI credential resync succeeded — retrying request");
+                continue;
+              }
+              log.warn("Kiro CLI credential resync did not provide a new access token");
+            } catch (err) {
+              log.warn(`Kiro CLI credential resync failed: ${err}`);
+            }
+          }
 
           if (isCapacityError(errText) && capacityRetryCount < CAPACITY_MAX_RETRIES) {
             capacityRetryCount++;
