@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.14
+
+### Patch Changes
+
+- af273d6: Fix disk cache write failure on fresh installs (missing mkdirSync), deduplicate aliased imports, use log.warn instead of console.warn, remove any types from ExtensionAPI, and add @ts-ignore for bun:sqlite TS7 compatibility.
+
+- New models:
+
+  - `claude-sonnet-5`
+  - `glm-5`
+  - `deepseek-3-2`
+  - `gpt-5-6-sol`
+  - `gpt-5-6-terra`
+  - `gpt-5-6-luna`
+
 ## 0.4.12
 
 ### Patch Changes

@@ -5,6 +5,11 @@
 // API (e.g. "claude-sonnet-4.6"). Everything in this file is in the pi/dash
 // form except KIRO_MODEL_IDS and the output of resolveKiroModel.
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { log } from "./debug";
+
 /** Canonical Kiro API IDs (dot form) accepted by the server. */
 export const KIRO_MODEL_IDS = new Set<string>([
   "claude-fable-5",
@@ -595,18 +600,14 @@ export function setCachedDynamicModels(models: KiroModelDef[] | null): void {
 
 // ---- Disk model cache -------------------------------------------------
 
-import { existsSync as existsSyncCache, readFileSync as readFileSyncCache, writeFileSync as writeFileSyncCache } from "node:fs";
-import { homedir as homedirCache } from "node:os";
-import { join as joinCache } from "node:path";
-
-const MODEL_DISK_CACHE_PATH = joinCache(homedirCache(), ".pi", "agent", "kiro-models-cache.json");
+const MODEL_DISK_CACHE_PATH = join(homedir(), ".pi", "agent", "kiro-models-cache.json");
 const MODEL_DISK_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /** Read models from disk cache. Returns null if missing, corrupt, or expired. */
 export function readModelDiskCache(): KiroModelDef[] | null {
   try {
-    if (!existsSyncCache(MODEL_DISK_CACHE_PATH)) return null;
-    const raw = readFileSyncCache(MODEL_DISK_CACHE_PATH, "utf-8");
+    if (!existsSync(MODEL_DISK_CACHE_PATH)) return null;
+    const raw = readFileSync(MODEL_DISK_CACHE_PATH, "utf-8");
     const parsed = JSON.parse(raw) as { ts?: number; models?: KiroModelDef[] };
     if (!parsed || !Array.isArray(parsed.models) || typeof parsed.ts !== "number") return null;
     if (Date.now() - parsed.ts > MODEL_DISK_CACHE_TTL_MS) return null;
@@ -619,13 +620,15 @@ export function readModelDiskCache(): KiroModelDef[] | null {
 /** Persist models to disk cache with a timestamp. */
 export function writeModelDiskCache(models: KiroModelDef[]): void {
   try {
-    writeFileSyncCache(
+    const dir = dirname(MODEL_DISK_CACHE_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(
       MODEL_DISK_CACHE_PATH,
       JSON.stringify({ ts: Date.now(), models }),
       { mode: 0o600 },
     );
   } catch (err) {
     // Non-fatal — cache write failure degrades gracefully
-    console.warn(`[pi-kiro] Failed to write model disk cache: ${err}`);
+    log.warn(`Failed to write model disk cache: ${err}`);
   }
 }

@@ -373,6 +373,7 @@ async function importFromKiroDb(): Promise<KiroCliCredentials | null> {
     // available there; the CLI fallback keeps DB import dependency-free.
     let Database: SqliteDatabaseConstructor | null = null;
     try {
+      // @ts-ignore - bun:sqlite is a Bun-only built-in; may not resolve under all TS versions
       Database = (await import("bun:sqlite")).Database as SqliteDatabaseConstructor;
     } catch {
       try {
@@ -637,6 +638,7 @@ export async function saveKiroCliCredentials(creds: KiroCliCredentials): Promise
   try {
     let Database: SqliteDatabaseConstructor | null = null;
     try {
+      // @ts-ignore - bun:sqlite is a Bun-only built-in; may not resolve under all TS versions
       Database = (await import("bun:sqlite")).Database as SqliteDatabaseConstructor;
     } catch {
       try {
