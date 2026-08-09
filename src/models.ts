@@ -470,8 +470,6 @@ export async function resolveProfileArn(
 
 /**
  * Fetch the list of models actually available for this account from Kiro.
- * Filters out "auto" — it appears in ListAvailableModels but is rejected
- * by GenerateAssistantResponse with INVALID_MODEL_ID.
  */
 export async function fetchAvailableModels(
   accessToken: string,
@@ -506,7 +504,7 @@ export async function fetchAvailableModels(
     throw new Error(`ListAvailableModels failed: HTTP ${resp.status} - ${body}`);
   }
   const data = (await resp.json()) as { models?: KiroApiModel[] };
-  return (data.models ?? []).filter((m) => m.modelId !== "auto");
+  return data.models ?? [];
 }
 
 /** Model families known to support reasoning/thinking. */

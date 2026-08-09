@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   filterModelsByRegion,
   KIRO_MODEL_IDS,
@@ -27,6 +27,25 @@ describe("resolveKiroModel", () => {
     for (const m of kiroModels) {
       expect(() => resolveKiroModel(m.id)).not.toThrow();
       expect(KIRO_MODEL_IDS.has(resolveKiroModel(m.id))).toBe(true);
+    }
+  });
+});
+
+describe("dynamic model catalog", () => {
+  it("preserves auto when Kiro advertises it", async () => {
+    const { fetchAvailableModels } = await import("../src/models");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ models: [{ modelId: "auto", modelName: "Auto" }] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await expect(fetchAvailableModels("token", "us-east-1", "arn")).resolves.toEqual([
+        { modelId: "auto", modelName: "Auto" },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

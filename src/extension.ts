@@ -96,6 +96,12 @@ interface ExtensionAPI {
 }
 
 const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+const AUTO_MODEL: KiroModelDef = kiroModels.find((model) => model.id === "auto")!;
+
+/** Keep Auto available while an older disk cache is refreshed. */
+function withAutoModel(models: readonly KiroModelDef[]): KiroModelDef[] {
+  return models.some((model) => model.id === "auto") ? [...models] : [...models, AUTO_MODEL];
+}
 
 /** Pi → Kiro effort mapping. Exposes all 5 Pi thinking levels. */
 const KIRO_THINKING_LEVEL_MAP: Partial<Record<string, string | null>> = {
@@ -221,11 +227,12 @@ function writeKiroCredentialsPartial(fields: Record<string, unknown>): void {
 export default async function (pi: ExtensionAPI): Promise<void> {
   // --- Fast path: load disk-cached models immediately, no network ---
   // `kiroModels` (KiroModel[]) is structurally a superset of KiroModelDef.
-  let modelDefs = toProviderModels(kiroModels);
+  let modelDefs = toProviderModels(withAutoModel(kiroModels));
   const diskCached = readModelDiskCache();
   if (diskCached && diskCached.length > 0) {
-    setCachedDynamicModels(diskCached);
-    modelDefs = toProviderModels(diskCached);
+    const cachedModels = withAutoModel(diskCached);
+    setCachedDynamicModels(cachedModels);
+    modelDefs = toProviderModels(cachedModels);
     log.info(`Loaded ${modelDefs.length} models from disk cache (fast path)`);
   }
 
@@ -295,8 +302,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         const dynamicDefs = getCachedDynamicModels();
         const kiroModelsToRegister: Model<Api>[] =
           dynamicDefs && dynamicDefs.length > 0
-            ? toProviderModels(dynamicDefs).map(toKiroModel)
-            : filterModelsByRegion(toProviderModels(kiroModels).map(toKiroModel), apiRegion);
+            ? toProviderModels(withAutoModel(dynamicDefs)).map(toKiroModel)
+            : filterModelsByRegion(toProviderModels(withAutoModel(kiroModels)).map(toKiroModel), apiRegion);
 
         return [...nonKiro, ...kiroModelsToRegister];
       },
