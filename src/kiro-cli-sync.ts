@@ -24,12 +24,12 @@
 // This module reads from the kiro-cli SQLite DB first (preferred: gives
 // full OIDC creds), then falls back to the Kiro IDE SSO cache JSON
 // (weaker: no OIDC creds, refresh must go through the desktop endpoint).
-// SQLite access uses bun:sqlite when available, optional better-sqlite3 when
-// installed, then the system sqlite3 CLI for Node-based pi runtimes. Both
-// paths are readonly on import. Refresh write-back is limited to credentials
-// that originated from the kiro-cli SQLite DB, and updates the exact token row
-// that was imported so desktop/IDE refresh tokens are never mixed into CLI
-// token storage.
+// SQLite access uses bun:sqlite when available, then Node's built-in
+// node:sqlite (the usual path — pi runs extensions on Node), then optional
+// better-sqlite3, then the system sqlite3 CLI. Both paths are readonly on
+// import. Refresh write-back is limited to credentials that originated from
+// the kiro-cli SQLite DB, and updates the exact token row that was imported
+// so desktop/IDE refresh tokens are never mixed into CLI token storage.
 //
 // This enables zero-friction login: if the user has kiro-cli or Kiro
 // IDE installed and logged in, pi-kiro can import the credentials
@@ -85,6 +85,40 @@ interface SqliteDatabaseConstructor {
 }
 
 const SQLITE_CLI_TIMEOUT_MS = 5000;
+
+/**
+ * Resolve a SQLite driver in preference order: `bun:sqlite` (when running
+ * under Bun), then Node's built-in `node:sqlite` (works on a plain Node pi
+ * install with zero extra dependencies — the common case, since pi usually
+ * runs extensions on Node), then the optional `better-sqlite3` peer
+ * dependency. Callers fall back to the `sqlite3` CLI when this returns
+ * null. Never throws.
+ */
+async function loadSqliteDriver(): Promise<SqliteDatabaseConstructor | null> {
+  try {
+    // @ts-ignore - bun:sqlite is a Bun-only built-in; may not resolve under all TS versions
+    return (await import("bun:sqlite")).Database as SqliteDatabaseConstructor;
+  } catch {
+    // Not running under Bun — fall through.
+  }
+  try {
+    // DatabaseSync already matches SqliteDb; only the constructor differs,
+    // taking `readOnly` where bun:sqlite/better-sqlite3 take `readonly`.
+    const { DatabaseSync } = await import("node:sqlite");
+    return function (path: string, options?: { readonly?: boolean }) {
+      return new DatabaseSync(path, { readOnly: options?.readonly });
+    } as unknown as SqliteDatabaseConstructor;
+  } catch {
+    // Node without node:sqlite (pre-22.5, or built without SQLite) — fall through.
+  }
+  try {
+    // @ts-expect-error - better-sqlite3 is an optional peer dependency
+    return (await import("better-sqlite3")).default as SqliteDatabaseConstructor;
+  } catch {
+    log.debug("No SQLite driver available (bun:sqlite, node:sqlite, better-sqlite3); trying sqlite3 CLI");
+    return null;
+  }
+}
 
 /**
  * Platform-specific path to kiro-cli's SQLite credential database
@@ -368,21 +402,7 @@ async function importFromKiroDb(): Promise<KiroCliCredentials | null> {
     let rows: AuthKvRow[];
     let activeProfileArn: string | undefined;
 
-    // Dynamic import: try bun:sqlite first, fallback to better-sqlite3, then
-    // sqlite3 CLI. Pi usually runs extensions on Node, so bun:sqlite is not
-    // available there; the CLI fallback keeps DB import dependency-free.
-    let Database: SqliteDatabaseConstructor | null = null;
-    try {
-      // @ts-ignore - bun:sqlite is a Bun-only built-in; may not resolve under all TS versions
-      Database = (await import("bun:sqlite")).Database as SqliteDatabaseConstructor;
-    } catch {
-      try {
-        // @ts-expect-error - better-sqlite3 is an optional peer dependency
-        Database = (await import("better-sqlite3")).default as SqliteDatabaseConstructor;
-      } catch {
-        log.debug("No SQLite driver available (need bun:sqlite or better-sqlite3); trying sqlite3 CLI");
-      }
-    }
+    const Database = await loadSqliteDriver();
 
     if (Database) {
       const db = new Database(dbPath, { readonly: true });
@@ -636,18 +656,7 @@ export async function saveKiroCliCredentials(creds: KiroCliCredentials): Promise
   }
 
   try {
-    let Database: SqliteDatabaseConstructor | null = null;
-    try {
-      // @ts-ignore - bun:sqlite is a Bun-only built-in; may not resolve under all TS versions
-      Database = (await import("bun:sqlite")).Database as SqliteDatabaseConstructor;
-    } catch {
-      try {
-        // @ts-expect-error - better-sqlite3 is an optional peer dependency
-        Database = (await import("better-sqlite3")).default as SqliteDatabaseConstructor;
-      } catch {
-        log.debug("No SQLite driver available for credential write-back; trying sqlite3 CLI");
-      }
-    }
+    const Database = await loadSqliteDriver();
 
     let rows: AuthKvRow[];
     let db: SqliteDb | null = null;
