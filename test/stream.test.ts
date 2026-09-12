@@ -192,6 +192,7 @@ describe("streamKiro", () => {
         refreshToken: "refresh-token",
         region: "us-east-1",
         authMethod: "idc",
+        profileArn: "arn:aws:codewhisperer:us-east-1:000000000000:profile/fresh",
       });
       const success = {
         ok: true,
@@ -226,6 +227,10 @@ describe("streamKiro", () => {
       expect(vi.mocked(importFromKiroCli)).toHaveBeenCalledOnce();
       expect(fetchMock.mock.calls[0]?.[1]?.headers.Authorization).toBe("Bearer stale-token");
       expect(fetchMock.mock.calls[1]?.[1]?.headers.Authorization).toBe("Bearer fresh-token");
+      const retriedBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
+      expect(retriedBody.profileArn).toBe(
+        "arn:aws:codewhisperer:us-east-1:000000000000:profile/fresh",
+      );
       expect(events.some((event) => event.type === "done")).toBe(true);
     },
   );

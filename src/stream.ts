@@ -806,7 +806,10 @@ export function streamKiro(
               const imported = await importFromKiroCli();
               if (imported?.accessToken && imported.accessToken !== accessToken) {
                 accessToken = imported.accessToken;
-                if (imported.profileArn) seedProfileArn(imported.profileArn);
+                if (imported.profileArn) {
+                  seedProfileArn(imported.profileArn);
+                  request.profileArn = imported.profileArn;
+                }
                 log.info("Kiro CLI credential resync succeeded — retrying request");
                 continue;
               }
