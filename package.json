@@ -59,7 +59,6 @@
     "changeset": "changeset",
     "version": "changeset version",
     "publish:dry-run": "npm publish --dry-run",
-    "prepack": "bun run build",
     "prepublishOnly": "bun run check",
     "prepare": "bun run build"
   },

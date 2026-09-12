@@ -29,30 +29,24 @@ import { importFromKiroCli } from "../src/kiro-cli-sync";
 
 describe("node:sqlite driver", () => {
   it("reads the kiro-cli DB on a plain Node runtime and opens it read-only", async () => {
-    prepare.mockImplementation((sql: string) => ({
-      all: () =>
-        sql.includes("auth_kv")
-          ? [
-              {
-                key: "kirocli:odic:device-registration",
-                value: JSON.stringify({ client_id: "CID", client_secret: "SEC" }),
-              },
-              {
-                key: "kirocli:odic:token",
-                value: JSON.stringify({
-                  accessToken: "AT",
-                  refreshToken: "RT",
-                  region: "us-east-1",
-                }),
-              },
-            ]
-          : [],
+    // `all()` is only ever called on the auth_kv statement; the state
+    // lookup uses `get()`.
+    prepare.mockImplementation(() => ({
+      all: () => [
+        {
+          key: "kirocli:odic:device-registration",
+          value: JSON.stringify({ client_id: "CID", client_secret: "SEC" }),
+        },
+        {
+          key: "kirocli:odic:token",
+          value: JSON.stringify({ accessToken: "AT", refreshToken: "RT", region: "us-east-1" }),
+        },
+      ],
       get: () => ({
         value: JSON.stringify({
           arn: "arn:aws:codewhisperer:eu-central-1:000000000000:profile/P",
         }),
       }),
-      run: vi.fn(),
     }));
 
     const creds = await importFromKiroCli();
