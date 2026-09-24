@@ -15,6 +15,7 @@ import {
   MAX_KIRO_IMAGES,
   normalizeImageFormat,
   normalizeMessages,
+  resolveContext,
   sanitizeHistory,
   TOOL_RESULT_LIMIT,
   toKiroToolUseId,
@@ -573,5 +574,27 @@ describe("sanitizeHistory", () => {
     const result = sanitizeHistory(h);
     // toolUses stripped because there's no next message with results
     expect(result[0]?.assistantResponseMessage?.toolUses).toBeUndefined();
+  });
+});
+
+describe("resolveContext", () => {
+  const tool = (name: string) => ({ name, description: name, parameters: { type: "object" } }) as never;
+  const user: UserMessage = { role: "user", content: "hi", timestamp: ts };
+
+  it("returns legacy contexts unchanged", () => {
+    const ctx = { systemPrompt: "sys", tools: [tool("a")], messages: [user] };
+    expect(resolveContext(ctx)).toBe(ctx);
+  });
+
+  it("folds pi >= 0.87 system messages into systemPrompt/tools", () => {
+    const messages = [
+      { role: "system", content: "", sections: { a: "A", b: "B" }, toolsAdded: [tool("read"), tool("bash")], timestamp: 0 },
+      user,
+      { role: "system", content: "later", sections: { a: null }, toolsRemoved: [{ name: "bash" }], timestamp: ts },
+    ] as unknown as Message[];
+    const out = resolveContext({ messages });
+    expect(out.messages).toEqual([user]);
+    expect(out.systemPrompt).toBe("later\n\nB");
+    expect(out.tools?.map((t) => t.name)).toEqual(["read"]);
   });
 });

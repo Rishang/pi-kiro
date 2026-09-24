@@ -6,14 +6,65 @@
 // the padding used to cause echo-loop bugs downstream.
 
 import type {
+  Context,
   ImageContent,
   Message,
   TextContent,
   ThinkingContent,
+  Tool,
   ToolCall,
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
+
+// pi-ai >= 0.87 system message. Declared locally so we still build against
+// older pi-ai whose Message union has no "system" role.
+interface SystemMessageLike {
+  role: "system";
+  content: string | TextContent[];
+  sections?: Record<string, string | null>;
+  toolsAdded?: Tool[];
+  toolsRemoved?: Array<{ name: string }>;
+}
+
+function textOf(content: string | TextContent[]): string {
+  return typeof content === "string" ? content : content.map((c) => c.text).join("");
+}
+
+/** pi >= 0.87 moves `systemPrompt`/`tools` into `role: "system"` messages
+ *  (leading prompt + mid-conversation deltas). Kiro has no system role, so
+ *  replay them the way pi-ai's getCurrentSystemPrompt/getCurrentTools do and
+ *  return a context with only user/assistant/toolResult messages. */
+export function resolveContext(context: Context): Context {
+  const all = context.messages as Array<Message | SystemMessageLike>;
+  if (!all.some((m) => m.role === "system")) return context;
+
+  const content: string[] = context.systemPrompt ? [context.systemPrompt] : [];
+  const sections = new Map<string, string>();
+  const tools = new Map<string, Tool>((context.tools ?? []).map((t) => [t.name, t]));
+  const messages: Message[] = [];
+  for (const m of all) {
+    if (m.role !== "system") {
+      messages.push(m);
+      continue;
+    }
+    const text = textOf(m.content);
+    if (text) content.push(text);
+    for (const [name, value] of Object.entries(m.sections ?? {})) {
+      if (value === null) sections.delete(name);
+      else sections.set(name, value);
+    }
+    for (const t of m.toolsRemoved ?? []) tools.delete(t.name);
+    for (const t of m.toolsAdded ?? []) tools.set(t.name, t);
+  }
+  const systemPrompt = [content.join("\n\n"), ...sections.values()].filter(Boolean).join("\n\n");
+  return {
+    ...context,
+    systemPrompt: systemPrompt || undefined,
+    tools: tools.size > 0 ? [...tools.values()] : undefined,
+    messages,
+  };
+}
 
 
 /** Drop assistant messages that ended in error/aborted — partial turns

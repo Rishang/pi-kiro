@@ -41,6 +41,7 @@ import {
   type KiroUserInputMessage,
   normalizeMessages,
   parseToolArgs,
+  resolveContext,
   toKiroToolUseId,
   TOOL_RESULT_LIMIT,
   truncate,
@@ -319,9 +320,10 @@ export function resolveConversationId(sessionId: string | undefined): string {
 
 export function streamKiro(
   model: Model<Api>,
-  context: Context,
+  rawContext: Context,
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+  const context = resolveContext(rawContext);
   const stream = createAssistantMessageEventStream();
   (async () => {
     const output: AssistantMessage = {
