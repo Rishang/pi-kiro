@@ -25,7 +25,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, existsSync: vi.fn().mockReturnValue(true), readFileSync: vi.fn() };
 });
 
-import { importFromKiroCli } from "../src/kiro-cli-sync";
+import { importFromKiroCli, saveKiroCliCredentials } from "../src/kiro-cli-sync";
 
 describe("node:sqlite driver", () => {
   it("reads the kiro-cli DB on a plain Node runtime and opens it read-only", async () => {
@@ -69,5 +69,35 @@ describe("node:sqlite driver", () => {
       { readOnly: true },
     );
     expect(close).toHaveBeenCalled();
+  });
+
+  it("writes refreshed credentials back to the exact imported token row only", async () => {
+    const run = vi.fn();
+    prepare.mockImplementation(() => ({
+      all: () => [
+        { key: "kirocli:social:token", value: JSON.stringify({ accessToken: "SOCIAL_AT" }) },
+        { key: "kirocli:odic:token", value: JSON.stringify({ accessToken: "OLD_AT", region: "eu-central-1" }) },
+      ],
+      run,
+    }));
+
+    const ok = await saveKiroCliCredentials({
+      accessToken: "NEW_AT",
+      refreshToken: "NEW_RT",
+      region: "eu-central-1",
+      authMethod: "idc",
+      source: "kiro-cli-db",
+      tokenKey: "kirocli:odic:token",
+    });
+
+    expect(ok).toBe(true);
+    expect(run).toHaveBeenCalledOnce();
+    const [value, key] = run.mock.calls[0] as [string, string];
+    expect(key).toBe("kirocli:odic:token");
+    expect(JSON.parse(value)).toMatchObject({
+      accessToken: "NEW_AT",
+      refreshToken: "NEW_RT",
+      region: "eu-central-1",
+    });
   });
 });

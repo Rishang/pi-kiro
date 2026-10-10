@@ -5,8 +5,8 @@ item numbers in comments.
 
 ## Transform (pi → Kiro)
 
-1. System prompt prepended to first user message, not sent as separate field.
-   `systemPrepended: true` flag prevents double-prepend.
+1. System prompt prepended to the current user message, not sent as a separate
+   field (Kiro has none) and never replayed into history.
 2. `modelId: kiroModelId` with dot format (e.g. `claude-sonnet-4.6`), converted
    from pi's dash format via `resolveKiroModel()`. Accepts the static catalog
    and any ID in the dynamic catalog (ListAvailableModels or its disk cache),
@@ -99,7 +99,7 @@ item numbers in comments.
 32. `contextUsagePercentage` → `usage.input`:
     `Math.round((pct/100) * contextWindow)`; `contextPercent` exposed on usage.
 33. Output tokens: prefer `usage.outputTokens` event; fall back to
-    `countTokens(totalContent)` using a `Math.ceil(length / 4)` heuristic
+    a `Math.ceil(totalContent.length / 4)` heuristic
     (~4 chars/token). Approximation only — diverges from real BPE for code
     and CJK/emoji text; feeds cost reporting on the fallback path.
 34. `calculateCost(model, usage)` from pi-mono. Fallback to zeros on error.
@@ -155,10 +155,9 @@ item numbers in comments.
     `"odic"`, `"oidc"`, or `"idc"`. Falls back to the AWS SSO OIDC
     cache file at `~/.aws/sso/cache/kiro-auth-token.json` (or
     `%USERPROFILE%\.aws\sso\cache\kiro-auth-token.json` on Windows)
-    when the kiro-cli DB is missing/locked/unreadable. DB access first
-    tries `bun:sqlite`, then optional `better-sqlite3`, then the system
-    `sqlite3` CLI with SQL passed over stdin so refresh tokens are not
-    exposed in process argv. The cache is
+    when the kiro-cli DB is missing/locked/unreadable. DB access uses
+    `bun:sqlite`, else Node's built-in `node:sqlite` (Node >= 22.13).
+    The cache is
     written by Kiro IDE (the GUI), not kiro-cli, and contains
     `{accessToken, refreshToken, expiresAt, clientIdHash, authMethod,
     provider, region}`. `authMethod: "IdC"` maps to internal `"idc"`,
