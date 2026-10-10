@@ -43,10 +43,15 @@ export function dotToDash(modelId: string): string {
   return modelId.replace(/(\d)\.(\d)/g, "$1-$2");
 }
 
-/** Convert pi's dash form to the Kiro API's dot form (e.g. 4-6 → 4.6). */
+/**
+ * Convert pi's dash form to the Kiro API's dot form (e.g. 4-6 → 4.6).
+ * Accepts the static catalog plus anything the dynamic catalog advertises
+ * (live ListAvailableModels or the disk cache), so newly launched Kiro
+ * models work without a code change.
+ */
 export function resolveKiroModel(modelId: string): string {
   const kiroId = dashToDot(modelId);
-  if (!KIRO_MODEL_IDS.has(kiroId)) {
+  if (!KIRO_MODEL_IDS.has(kiroId) && !getCachedDynamicModels()?.some((m) => m.id === modelId)) {
     throw new Error(`Unknown Kiro model ID: ${modelId}`);
   }
   return kiroId;
@@ -540,20 +545,9 @@ export interface KiroModelDef {
   supportsThinkingConfig?: boolean;
 }
 
-/**
- * Build pi model definitions from the Kiro ListAvailableModels API response.
- *
- * BY DESIGN: this also mutates the module-level KIRO_MODEL_IDS set (adds each
- * dynamic model id) so resolveKiroModel() accepts ids that only exist in the
- * dynamic catalog. The side effect is intentional and required — without it,
- * dynamically-discovered models would be rejected as "Unknown Kiro model ID"
- * before the request is ever sent.
- */
+/** Build pi model definitions from the Kiro ListAvailableModels API response. */
 export function buildModelsFromApi(apiModels: KiroApiModel[]): KiroModelDef[] {
   return apiModels.map((m) => {
-    // Register the model ID dynamically to allow resolveKiroModel to pass
-    KIRO_MODEL_IDS.add(m.modelId);
-
     const dashId = dotToDash(m.modelId);
     const supportedTypes = m.supportedInputTypes ?? ["TEXT"];
     const input: ("text" | "image")[] = supportedTypes.includes("IMAGE")

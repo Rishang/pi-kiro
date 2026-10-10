@@ -8,7 +8,9 @@ item numbers in comments.
 1. System prompt prepended to first user message, not sent as separate field.
    `systemPrepended: true` flag prevents double-prepend.
 2. `modelId: kiroModelId` with dot format (e.g. `claude-sonnet-4.6`), converted
-   from pi's dash format via `resolveKiroModel()`.
+   from pi's dash format via `resolveKiroModel()`. Accepts the static catalog
+   and any ID in the dynamic catalog (ListAvailableModels or its disk cache),
+   so new Kiro models need no code change.
 3. `origin: "KIRO_CLI"` literal on every `userInputMessage`.
 4. Assistant `thinking` blocks serialized as `<thinking>...</thinking>` prefix
    to `content`.

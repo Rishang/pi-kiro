@@ -5,6 +5,7 @@ import {
   kiroModels,
   resolveApiRegion,
   resolveKiroModel,
+  setCachedDynamicModels,
 } from "../src/models";
 
 describe("resolveKiroModel", () => {
@@ -21,6 +22,20 @@ describe("resolveKiroModel", () => {
 
   it("throws on unknown model IDs", () => {
     expect(() => resolveKiroModel("gpt-4")).toThrow(/Unknown Kiro model ID/);
+  });
+
+  // Conformance #2: IDs only the dynamic catalog knows (new Kiro launches,
+  // loaded from the disk cache with no API fetch) must still resolve.
+  it("accepts IDs from the dynamic catalog", () => {
+    setCachedDynamicModels([
+      { id: "claude-sonnet-9-9", name: "Future", reasoning: true, input: ["text"], contextWindow: 1, maxTokens: 1 },
+    ]);
+    try {
+      expect(resolveKiroModel("claude-sonnet-9-9")).toBe("claude-sonnet-9.9");
+    } finally {
+      setCachedDynamicModels(null);
+    }
+    expect(() => resolveKiroModel("claude-sonnet-9-9")).toThrow(/Unknown Kiro model ID/);
   });
 
   it("every kiroModels entry resolves to a known Kiro ID", () => {
