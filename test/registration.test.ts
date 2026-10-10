@@ -8,7 +8,7 @@ vi.mock("../src/models", async (importOriginal) => ({
 }));
 
 import registerExtension from "../src/extension";
-import { setCachedDynamicModels, type KiroModelDef } from "../src/models";
+import { resolveKiroModel, setCachedDynamicModels, type KiroModelDef } from "../src/models";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -91,6 +91,28 @@ describe("extension registration", () => {
       "legacy-model",
       "auto",
     ]);
+  });
+
+  // Conformance #2 regression: a model that exists only in the disk cache
+  // (fresh cache → no API fetch) used to fail with "Unknown Kiro model ID".
+  it("models loaded from the disk cache resolve to Kiro IDs", async () => {
+    readModelDiskCache.mockReturnValue([{
+      id: "claude-sonnet-9-9",
+      name: "Claude Sonnet 9.9",
+      reasoning: true,
+      input: ["text"],
+      contextWindow: 1_000_000,
+      maxTokens: 64_000,
+    }]);
+    const pi = {
+      registerProvider: vi.fn(),
+      unregisterProvider: vi.fn(),
+      on: vi.fn(),
+    } as unknown as Parameters<typeof registerExtension>[0];
+
+    await registerExtension(pi);
+
+    expect(resolveKiroModel("claude-sonnet-9-9")).toBe("claude-sonnet-9.9");
   });
 
   it("config uses only documented ProviderConfig fields (no undocumented extensions)", async () => {
