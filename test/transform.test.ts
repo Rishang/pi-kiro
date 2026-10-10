@@ -7,7 +7,6 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   buildHistory,
-  collapseAgenticLoops,
   convertImagesToKiro,
   getContentText,
   type KiroHistoryEntry,
@@ -177,85 +176,6 @@ describe("convertImagesToKiro", () => {
   });
 });
 
-describe("collapseAgenticLoops", () => {
-  const asstWithTool = (text: string, toolName: string): KiroHistoryEntry => ({
-    assistantResponseMessage: {
-      content: text,
-      toolUses: [{ name: toolName, toolUseId: `id-${toolName}`, input: {} }],
-    },
-  });
-
-  const userWithToolResult = (toolName: string): KiroHistoryEntry => ({
-    userInputMessage: {
-      content: "Tool results provided.",
-      modelId: "M",
-      origin: "KIRO_CLI" as const,
-      userInputMessageContext: {
-        toolResults: [{
-          content: [{ text: "ok" }],
-          status: "success" as const,
-          toolUseId: `id-${toolName}`,
-        }],
-      },
-    },
-  });
-
-  it("returns unchanged for short history (< 4 entries)", () => {
-    const h: KiroHistoryEntry[] = [
-      { userInputMessage: { content: "hi", modelId: "M", origin: "KIRO_CLI" } },
-    ];
-    expect(collapseAgenticLoops(h)).toEqual(h);
-  });
-
-  it("returns unchanged for single tool-use pair", () => {
-    const h: KiroHistoryEntry[] = [
-      { userInputMessage: { content: "hi", modelId: "M", origin: "KIRO_CLI" } },
-      asstWithTool("Let me check", "bash"),
-      userWithToolResult("bash"),
-      { userInputMessage: { content: "next", modelId: "M", origin: "KIRO_CLI" } },
-    ];
-    const result = collapseAgenticLoops(h);
-    expect(result).toHaveLength(4);
-    expect(result[1]?.assistantResponseMessage?.content).toBe("Let me check");
-  });
-
-  it("collapses 3 consecutive tool-use pairs", () => {
-    const h: KiroHistoryEntry[] = [
-      asstWithTool("First thought", "bash"),
-      userWithToolResult("bash"),
-      asstWithTool("Second thought", "read"),
-      userWithToolResult("read"),
-      asstWithTool("Third thought", "write"),
-      userWithToolResult("write"),
-    ];
-    const result = collapseAgenticLoops(h);
-    expect(result).toHaveLength(6); // same count, but text replaced
-    // First pair keeps its text
-    expect(result[0]?.assistantResponseMessage?.content).toBe("First thought");
-    // Subsequent pairs get placeholder text
-    expect(result[2]?.assistantResponseMessage?.content).toBe("[tool calling continues]");
-    expect(result[4]?.assistantResponseMessage?.content).toBe("[tool calling continues]");
-    // Tool uses are preserved on all
-    expect(result[2]?.assistantResponseMessage?.toolUses?.[0]?.name).toBe("read");
-    expect(result[4]?.assistantResponseMessage?.toolUses?.[0]?.name).toBe("write");
-  });
-
-  it("does not collapse non-tool entries between loops", () => {
-    const h: KiroHistoryEntry[] = [
-      asstWithTool("First", "bash"),
-      userWithToolResult("bash"),
-      { userInputMessage: { content: "plain user msg", modelId: "M", origin: "KIRO_CLI" } },
-      asstWithTool("After break", "read"),
-      userWithToolResult("read"),
-    ];
-    const result = collapseAgenticLoops(h);
-    // The plain user message breaks the sequence, so no collapse
-    expect(result[0]?.assistantResponseMessage?.content).toBe("First");
-    expect(result[2]?.userInputMessage?.content).toBe("plain user msg");
-    expect(result[3]?.assistantResponseMessage?.content).toBe("After break");
-  });
-});
-
 describe("buildHistory", () => {
   describe("toolUseId canonicalization", () => {
     it("keeps native Kiro tooluse IDs unchanged", () => {
@@ -275,7 +195,7 @@ describe("buildHistory", () => {
       a.content = [{ type: "toolCall", id: rawId, name: "bash", arguments: { cmd: "ls" } }];
       const msgs: Message[] = [user("go"), a, toolResult(rawId, "ok"), user("next")];
 
-      const { history } = buildHistory(msgs, "M");
+      const { history } = buildHistory(msgs);
       const assistantEntry = history.find((h) => h.assistantResponseMessage?.toolUses);
       const resultEntry = history.find((h) => h.userInputMessage?.userInputMessageContext?.toolResults);
       const toolUseId = assistantEntry?.assistantResponseMessage?.toolUses?.[0]?.toolUseId;
@@ -288,20 +208,13 @@ describe("buildHistory", () => {
   });
 
   it("returns empty history for single user", () => {
-    const { history } = buildHistory([user("Hello")], "M");
+    const { history } = buildHistory([user("Hello")]);
     expect(history).toHaveLength(0);
-  });
-
-  it("prepends system prompt to first user message", () => {
-    const msgs: Message[] = [user("first"), assistant("reply"), user("second")];
-    const { history, systemPrepended } = buildHistory(msgs, "M", "Be helpful");
-    expect(systemPrepended).toBe(true);
-    expect(history[0]?.userInputMessage?.content).toMatch(/^Be helpful/);
   });
 
   it("uses origin: KIRO_CLI", () => {
     const msgs: Message[] = [user("first"), assistant("reply"), user("second")];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     expect(history[0]?.userInputMessage?.origin).toBe("KIRO_CLI");
   });
 
@@ -309,7 +222,7 @@ describe("buildHistory", () => {
     const a = assistant("");
     a.content = [{ type: "toolCall", id: "tc1", name: "bash", arguments: { cmd: "ls" } }];
     const msgs: Message[] = [user("go"), a, toolResult("tc1", "ok"), user("next")];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     const entry = history.find((h) => h.assistantResponseMessage?.toolUses);
     expect(entry?.assistantResponseMessage?.toolUses?.[0]?.name).toBe("bash");
   });
@@ -327,7 +240,7 @@ describe("buildHistory", () => {
       toolResult("tc2", "r2"),
       user("next"),
     ];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     const entry = history.find(
       (h) => h.userInputMessage?.userInputMessageContext?.toolResults,
     );
@@ -343,7 +256,7 @@ describe("buildHistory", () => {
       toolResult("tc1", "x".repeat(TOOL_RESULT_LIMIT + 1000)),
       user("next"),
     ];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     const entry = history.find(
       (h) => h.userInputMessage?.userInputMessageContext?.toolResults,
     );
@@ -353,7 +266,7 @@ describe("buildHistory", () => {
 
   it("merges consecutive user messages (no synthetic padding)", () => {
     const msgs: Message[] = [user("first"), user("second"), assistant("reply"), user("third")];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     expect(JSON.stringify(history)).not.toContain('"Continue"');
     expect(history[0]?.userInputMessage?.content).toContain("first");
     expect(history[0]?.userInputMessage?.content).toContain("second");
@@ -363,7 +276,7 @@ describe("buildHistory", () => {
     const a = assistant("");
     a.content = [{ type: "toolCall", id: "tc1", name: "a", arguments: {} }];
     const msgs: Message[] = [user("go"), user("more"), a, toolResult("tc1", "ok"), user("next")];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     expect(JSON.stringify(history)).not.toContain('"Continue"');
   });
 
@@ -375,7 +288,7 @@ describe("buildHistory", () => {
       assistant("reply"),
       user("d"),
     ];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     for (let i = 0; i < history.length - 1; i++) {
       const curr = history[i];
       const next = history[i + 1];
@@ -391,7 +304,7 @@ describe("buildHistory", () => {
       { type: "text", text: "answer" },
     ];
     const msgs: Message[] = [user("q"), a, user("followup")];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     const arm = history.find((h) => h.assistantResponseMessage);
     // Without a valid signature, thinking is silently dropped to avoid
     // Bedrock's THINKING_SIGNATURE_INVALID rejection.
@@ -407,7 +320,7 @@ describe("buildHistory", () => {
       { type: "text", text: "answer" },
     ];
     const msgs: Message[] = [user("q"), a, user("followup")];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     const arm = history.find((h) => h.assistantResponseMessage);
     expect(arm?.assistantResponseMessage?.content).toBe("answer");
     expect(arm?.assistantResponseMessage?.reasoningContent).toEqual({
@@ -419,7 +332,7 @@ describe("buildHistory", () => {
     const a = assistant("");
     a.content = [];
     const msgs: Message[] = [user("q"), a, user("followup")];
-    const { history } = buildHistory(msgs, "M");
+    const { history } = buildHistory(msgs);
     expect(history.find((h) => h.assistantResponseMessage)).toBeUndefined();
   });
 });
