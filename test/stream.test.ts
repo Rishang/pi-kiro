@@ -1480,6 +1480,28 @@ describe("idle timeout", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(events.find((e) => e.type === "done")?.type).toBe("done");
   });
+
+  // A silently dead connection is caught by the OS (Node's fetch enables TCP
+  // keepalive: idle 60s, 10 × 1s probes), so read() rejects with undici's
+  // "terminated" long before the 300s idle window. Surface the socket error
+  // code and leave no watchdog behind.
+  it("surfaces a dropped socket with its cause and clears the watchdog", async () => {
+    const dropped = Object.assign(new TypeError("terminated"), { cause: Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT" }) });
+    const reader = {
+      read: vi
+        .fn()
+        .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode(":event-type initial-response") })
+        .mockRejectedValueOnce(dropped),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body: { getReader: () => reader } }));
+
+    const events = await collect(streamKiro(makeModel({ id: "gpt-5-6-sol" }), makeContext(), { apiKey: "tok" }));
+
+    const err = events.find((e) => e.type === "error");
+    expect(err?.type === "error" && err.error.errorMessage).toBe("terminated (ETIMEDOUT)");
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe("mapKiroStopReason", () => {

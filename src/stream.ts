@@ -329,6 +329,9 @@ export function streamKiro(
     // error path can cancel it, preventing a stray late shim from
     // firing after the stream ended.
     let hiddenShimTimer: ReturnType<typeof setTimeout> | null = null;
+    // Stream watchdog (first-token / idle). Hoisted for the same reason: a
+    // dropped socket makes read() throw straight to the catch below.
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
 
     try {
       let accessToken = options?.apiKey;
@@ -809,7 +812,7 @@ export function streamKiro(
         // One watchdog: the first-token window until the first read, then the
         // idle window (re-armed on parsed events). Cancelling the reader
         // resolves the pending read with done, which ends the loop.
-        let watchdog: ReturnType<typeof setTimeout> | null = null;
+        watchdog = null;
         let gotFirstToken = false;
         let firstTokenTimedOut = false;
         let idleCancelled = false;
@@ -1118,7 +1121,13 @@ export function streamKiro(
     } catch (error) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage = error instanceof Error ? error.message : String(error);
+      // Node's fetch reports transport failures as a bare "fetch failed" /
+      // "terminated"; the socket code (ETIMEDOUT, ECONNRESET, ...) lives in
+      // `cause`. Keep the original text first so pi's retry patterns match.
+      const causeCode = error instanceof Error ? (error.cause as { code?: unknown } | undefined)?.code : undefined;
+      if (typeof causeCode === "string") output.errorMessage += ` (${causeCode})`;
       log.debug("response.caught", { stopReason: output.stopReason, error: output.errorMessage });
+      if (watchdog) clearTimeout(watchdog);
       // Cancel the pending shim timer so no stray shim fires after
       // the error event. Nothing to close — the shim is self-
       // contained when it fires, and if the timer is still armed
