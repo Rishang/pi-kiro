@@ -1398,6 +1398,90 @@ describe("firstTokenTimeoutForModel (consults dynamic models)", () => {
   });
 });
 
+// Conformance #43: after the first frame arrives, a reasoning model can sit
+// silent for minutes while it thinks (no parsed events). The idle window must
+// outlast that, or the turn is killed and retried mid-think on every attempt.
+describe("idle timeout", () => {
+  /** Reader that sends one non-event frame, then stays silent for `silenceMs`
+   *  (forever if null) before replying. `cancel()` ends the pending read. */
+  function silentReader(silenceMs: number | null) {
+    const enc = new TextEncoder();
+    let step = 0;
+    let wake: ((r: { done: boolean; value?: Uint8Array }) => void) | undefined;
+    return {
+      read: () => {
+        step++;
+        if (step === 1) return Promise.resolve({ done: false, value: enc.encode(":event-type initial-response") });
+        if (step === 2) {
+          return new Promise<{ done: boolean; value?: Uint8Array }>((resolve) => {
+            wake = resolve;
+            if (silenceMs !== null) {
+              setTimeout(
+                () => resolve({ done: false, value: enc.encode('{"content":"Hi"}{"contextUsagePercentage":5}') }),
+                silenceMs,
+              );
+            }
+          });
+        }
+        return Promise.resolve({ done: true, value: undefined });
+      },
+      cancel: vi.fn(() => {
+        wake?.({ done: true, value: undefined });
+        return Promise.resolve();
+      }),
+    };
+  }
+
+  function okResponse(reader: ReturnType<typeof silentReader>) {
+    return { ok: true, body: { getReader: () => reader } };
+  }
+
+  beforeEach(() => {
+    resetProfileArnCache();
+    seedProfileArn("arn:aws:codewhisperer:us-east-1:000000000000:profile/test");
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("waits out a 4-minute silent reasoning gap without retrying", async () => {
+    const reader = silentReader(240_000);
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(reader));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = collect(streamKiro(makeModel({ id: "gpt-5-6-sol" }), makeContext(), { apiKey: "tok" }));
+    await vi.advanceTimersByTimeAsync(240_000);
+    expect(reader.cancel).not.toHaveBeenCalled();
+    const events = await pending;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const done = events.find((e) => e.type === "done");
+    expect(done?.type).toBe("done");
+    if (done?.type === "done") expect(done.message.content).toEqual([{ type: "text", text: "Hi" }]);
+  });
+
+  it("still cancels and retries a stream that stays silent past 300s", async () => {
+    const stalled = silentReader(null);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse(stalled))
+      .mockResolvedValueOnce(okResponse(silentReader(0)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = collect(streamKiro(makeModel({ id: "gpt-5-6-sol" }), makeContext(), { apiKey: "tok" }));
+    await vi.advanceTimersByTimeAsync(299_000);
+    expect(stalled.cancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(stalled.cancel).toHaveBeenCalled();
+    const events = await pending;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events.find((e) => e.type === "done")?.type).toBe("done");
+  });
+});
+
 describe("mapKiroStopReason", () => {
   it("maps the real wire values", () => {
     expect(mapKiroStopReason("TOOL_USE")).toBe("toolUse");

@@ -54,7 +54,10 @@ import {
 // ---- Retry / timeout constants -----------------------------------------
 
 const FIRST_TOKEN_TIMEOUT_DEFAULT_MS = 90_000;
-const IDLE_TIMEOUT_MS = 60_000;
+// Conformance #43. Reasoning models (GPT-5.6 Sol, Opus at high effort) can go
+// minutes without a parsed event while they think; a shorter window kills the
+// turn mid-think on every retry.
+const IDLE_TIMEOUT_MS = 300_000;
 const MAX_RETRIES = 3;
 const MAX_RETRY_DELAY_MS = 10_000;
 
@@ -93,19 +96,10 @@ function isTransientError(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-function findModel(modelId: string): { firstTokenTimeout?: number; idleTimeout?: number } | undefined {
-  return (
-    kiroModels.find((x) => x.id === modelId) ??
-    getCachedDynamicModels()?.find((x) => x.id === modelId)
-  );
-}
-
 export function firstTokenTimeoutForModel(modelId: string): number {
-  return findModel(modelId)?.firstTokenTimeout ?? FIRST_TOKEN_TIMEOUT_DEFAULT_MS;
-}
-
-function idleTimeoutForModel(modelId: string): number {
-  return findModel(modelId)?.idleTimeout ?? IDLE_TIMEOUT_MS;
+  const def =
+    kiroModels.find((x) => x.id === modelId) ?? getCachedDynamicModels()?.find((x) => x.id === modelId);
+  return def?.firstTokenTimeout ?? FIRST_TOKEN_TIMEOUT_DEFAULT_MS;
 }
 
 /**
@@ -819,7 +813,6 @@ export function streamKiro(
         let gotFirstToken = false;
         let firstTokenTimedOut = false;
         let idleCancelled = false;
-        const idleTimeoutMs = idleTimeoutForModel(model.id);
         const armWatchdog = (ms: number) => {
           if (watchdog) clearTimeout(watchdog);
           watchdog = setTimeout(() => {
@@ -836,7 +829,7 @@ export function streamKiro(
           if (done) break;
           if (!gotFirstToken) {
             gotFirstToken = true;
-            armWatchdog(idleTimeoutMs);
+            armWatchdog(IDLE_TIMEOUT_MS);
           }
           const decoded = decoder.decode(value, { stream: true });
           buffer += decoded;
@@ -857,7 +850,7 @@ export function streamKiro(
           // idle timeout from firing. Without this guard, the API's
           // keepalive framing resets the timer on every chunk, causing
           // potentially infinite stream hangs.
-          if (events.length > 0) armWatchdog(idleTimeoutMs);
+          if (events.length > 0) armWatchdog(IDLE_TIMEOUT_MS);
 
           if (log.isDebug() && events.length > 0) {
             for (const ev of events) {

@@ -102,8 +102,6 @@ export interface KiroModelDef {
   maxTokens: number;
   /** Optional per-model override for the first-token timeout (ms). */
   firstTokenTimeout?: number;
-  /** Per-model idle timeout override (ms). */
-  idleTimeout?: number;
   /**
    * Upstream is expected to hide reasoning from clients — tags and
    * native reasoning events should be absent. When set:
@@ -168,7 +166,6 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 1_000_000,
     maxTokens: 128_000,
     firstTokenTimeout: 180_000,
-    idleTimeout: 180_000,
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     supportsThinkingConfig: true,
   },
@@ -181,7 +178,6 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 1_000_000,
     maxTokens: 128_000,
     firstTokenTimeout: 180_000,
-    idleTimeout: 180_000,
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     supportsThinkingConfig: true,
   },
@@ -194,7 +190,6 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 1_000_000,
     maxTokens: 128_000,
     firstTokenTimeout: 180_000,
-    idleTimeout: 180_000,
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     supportsThinkingConfig: true,
   },
@@ -265,7 +260,6 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 1_000_000,
     maxTokens: 64_000,
     firstTokenTimeout: 90_000,
-    idleTimeout: 60_000,
     supportedEfforts: ["low", "medium", "high", "max"],
     supportsThinkingConfig: true,
   },
@@ -323,7 +317,6 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 272_000,
     maxTokens: 64_000,
     firstTokenTimeout: 90_000,
-    idleTimeout: 60_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -334,7 +327,6 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 272_000,
     maxTokens: 64_000,
     firstTokenTimeout: 90_000,
-    idleTimeout: 60_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -345,7 +337,6 @@ export const kiroModels: KiroModel[] = [
     contextWindow: 272_000,
     maxTokens: 64_000,
     firstTokenTimeout: 90_000,
-    idleTimeout: 60_000,
   },
   {
     ...KIRO_DEFAULTS,
@@ -517,7 +508,6 @@ export function buildModelsFromApi(apiModels: KiroApiModel[]): KiroModelDef[] {
       contextWindow: m.tokenLimits?.maxInputTokens ?? 200_000,
       maxTokens: m.tokenLimits?.maxOutputTokens ?? 8_192,
       firstTokenTimeout: modelTimeout(m.modelId, 90_000),
-      idleTimeout: modelTimeout(m.modelId, 60_000),
       // Per-model overrides for known special cases
       ...(supportedEfforts ? { supportedEfforts } : {}),
       ...(supportsThinkingConfig ? { supportsThinkingConfig } : {}),

@@ -121,7 +121,9 @@ item numbers in comments.
     retry, max 3, 500ms base backoff.
 42. First-token timeout (90s default, per-model override) → retry outer loop
     (max 3).
-43. Idle timeout (300s rolling between reads) → retry outer loop.
+43. Idle timeout (300s, same for every model; re-armed on each parsed event
+    once the first bytes arrive) → retry outer loop. Reasoning models can
+    think silently for minutes, so the window must not be shortened per model.
 44. Empty response (no text + no tool calls) → retry outer loop (max 3).
 45. Stream-level `error` event → retry outer loop, max 3.
 46. Abort signal honored at every await point. Surfaces as
